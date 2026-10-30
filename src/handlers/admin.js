@@ -1,13 +1,14 @@
 import { buildAuthCookie, buildClearAuthCookie, checkAuth, simpleAuthResponse, validateCredentials, generateToken } from '../middleware/auth.js';
 import { getLatestMetricsForAllServers } from '../database/schema.js';
 import { getAllServers, clearServersListCache } from '../utils/cache.js';
-import { clearAppearanceSettingsCache, isValidThemeOptions, isWssReportConfigured, isWssReportEnabled, normalizeBooleanSetting, normalizeDefaultLanguage, normalizeDisplayMode, normalizeExpireNotificationTime, normalizeExpireReminder, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, normalizeNotificationTemplate, normalizeNotificationTimezone, normalizeNotificationWebhookBody, normalizeNotificationWebhookFormat, normalizeNotificationWebhookHeaders, normalizeNotificationWebhookMethod, normalizePreferredTheme, normalizeResourceAlertRules, normalizeTgNotify, normalizeWssReportHours, saveSiteOptions, saveThemeOptions, SITE_FIELDS, APPEARANCE_FIELDS } from '../utils/settings.js';
+import { clearAppearanceSettingsCache, isValidThemeOptions, isWssReportConfigured, isWssReportEnabled, normalizeBooleanSetting, normalizeDefaultLanguage, normalizeDisplayMode, normalizeExpireNotificationTime, normalizeExpireReminder, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, normalizeNotificationLanguage, normalizeNotificationTemplate, normalizeNotificationTimezone, normalizeNotificationWebhookBody, normalizeNotificationWebhookFormat, normalizeNotificationWebhookHeaders, normalizeNotificationWebhookMethod, normalizePreferredTheme, normalizeResourceAlertRules, normalizeTgNotify, normalizeWssReportHours, saveSiteOptions, saveThemeOptions, validateUserAgent, SITE_FIELDS, APPEARANCE_FIELDS } from '../utils/settings.js';
 import { mergeMetricsIntoServer } from '../utils/metrics.js';
 import { normalizePctOrNull } from '../utils/traffic.js';
 import { verifyTurnstileToken, hashPassword } from '../utils/common.js';
 import { AppError, createSuccessResponse, createBadRequestResponse, createUnauthorizedResponse, createErrorResponse } from '../utils/errors.js';
 import { addServerColumns } from '../database/updateDatabase.js';
 import { clearResourceAlertState, isSmtpNotificationTarget, sendNotification } from '../services/notification.js';
+import { getNotificationMessages } from '../services/notificationMessages.js';
 import { getNextServerHistoryPartitionId, HISTORY_MAX_PARTITION_ID } from '../database/indexOptimization.js';
 import { isValidTrafficCorrection, normalizeConnectionMode, normalizePingMode, normalizeWssReportInterval, validateAgentConfigInput, validatePingNode, validateNetworkInterfaces } from '../utils/agentConfig.js';
 import { scheduleAgentConfigChanged, scheduleAgentReportModeChanged } from '../utils/agentConfigNotify.js';
@@ -481,14 +482,7 @@ async function handleLoginAction({ request, env, sys, data }) {
     }
   }
 
-  const authHeader = 'Basic ' + btoa(username + ':' + password);
-  const mockRequest = {
-    headers: {
-      get: (key) => key === 'Authorization' ? authHeader : null
-    }
-  };
-
-  const credentialResult = await validateCredentials(mockRequest, env, sys);
+  const credentialResult = await validateCredentials(username, password, env, sys);
 
   if (!credentialResult.valid) {
     return createUnauthorizedResponse('invalidCredentials');
@@ -544,11 +538,10 @@ const PUBLIC_ADMIN_ACTION_HANDLERS = {
 };
 
 export function sanitizeAdminSettings(fullSettings = {}) {
-  const { jwt_secret, github_client_secret, password, ...safeSettings } = fullSettings || {};
+  const { jwt_secret, password, ...safeSettings } = fullSettings || {};
   return {
     ...safeSettings,
-    password_configured: Boolean(String(password || '').trim()),
-    github_client_secret_configured: Boolean(String(github_client_secret || '').trim())
+    password_configured: Boolean(String(password || '').trim())
   };
 }
 
@@ -601,7 +594,12 @@ async function handleSaveThemeOptionsAction({ env, sys, data }) {
   });
 }
 
-async function handleListAction({ env }) {
+async function handleListAction({ env, data }) {
+  // 管理后台「刷新缓存」会带 refresh: true，跳过本 isolate 的 120 秒列表缓存直接读 D1
+  if (data?.refresh === true) {
+    clearServersListCache();
+  }
+
   const servers = await getAllServers(env.DB);
   const latestMetricsMap = await getLatestMetricsForAllServers(env.DB);
 
@@ -695,6 +693,7 @@ async function handleSendTestNotificationAction({ data }) {
     notification_webhook_body,
     notification_template,
     notification_timezone,
+    notification_language,
     expire_notification_time
   } = data;
   const webhookEnabled = normalizeBooleanSetting(notification_webhook_enabled) === 'true';
@@ -708,7 +707,8 @@ async function handleSendTestNotificationAction({ data }) {
     return createBadRequestResponse('tgBotTokenRequired');
   }
   try {
-    const testMsg = '这是一条来自 CF Server Monitor 的测试消息。';
+    const notificationLanguage = normalizeNotificationLanguage(notification_language);
+    const messages = getNotificationMessages({ notification_language: notificationLanguage });
     const result = await sendNotification({
       tg_bot_token,
       tg_chat_id: tg_chat_id || '',
@@ -720,13 +720,14 @@ async function handleSendTestNotificationAction({ data }) {
       notification_webhook_body: normalizeNotificationWebhookBody(notification_webhook_body),
       notification_template: normalizeNotificationTemplate(notification_template),
       notification_timezone: normalizeNotificationTimezone(notification_timezone),
+      notification_language: notificationLanguage,
       expire_notification_time: normalizeExpireNotificationTime(expire_notification_time)
-    }, testMsg, {
-      event: '测试通知',
+    }, messages.testMessage, {
+      event: messages.events.test,
       emoji: '✅',
       clients: ['CF Server Monitor'],
       count: 1,
-      message: '这是一条来自 CF Server Monitor 的测试消息。'
+      message: messages.testMessage
     });
     if(result) {
       console.warn('Test notification failed:', result);
@@ -789,26 +790,6 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
         }
       }
 
-      const githubOAuthEnabled = normalizeBooleanSetting(
-        settings.github_oauth_enabled !== undefined
-          ? settings.github_oauth_enabled
-          : sys?.github_oauth_enabled
-      ) === 'true';
-      const effectiveGithubClientId = String(
-        settings.github_client_id !== undefined ? settings.github_client_id : sys?.github_client_id || ''
-      ).trim();
-      const effectiveGithubClientSecret = String(
-        settings.github_client_secret !== undefined ? settings.github_client_secret : sys?.github_client_secret || ''
-      ).trim();
-      if (githubOAuthEnabled) {
-        if (!effectiveGithubClientId) {
-          return createBadRequestResponse('githubClientIdRequired');
-        }
-        if (!effectiveGithubClientSecret) {
-          return createBadRequestResponse('githubClientSecretRequired');
-        }
-      }
-
       // 如果 tg_notify 或 expire_reminder 开启，验证 tg_bot_token 不为空
       const hasResourceAlertRulesInput = settings.resource_alert_rules !== undefined;
       const tgNotify = settings.tg_notify !== undefined
@@ -846,6 +827,16 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
       const pingNodes = normalizePingNodeFields(settings);
       if (!pingNodes.valid) {
         return createBadRequestResponse('invalidPingNodeFormat');
+      }
+
+      // UA 必须在任何写库动作之前校验：否则非法值会留下「外观已保存、站点设置未保存」的半成品状态。
+      let normalizedUserAgent = '';
+      if (settings.ua !== undefined) {
+        const uaResult = validateUserAgent(settings.ua);
+        if (!uaResult.valid) {
+          return createBadRequestResponse('invalidUserAgent');
+        }
+        normalizedUserAgent = uaResult.value;
       }
 
       if (settings.appearance_options !== undefined && (
@@ -912,10 +903,14 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
             siteOptions[field] = normalizeBooleanSetting(settings[field]);
           } else if (field === 'wss_report_hours') {
             siteOptions[field] = normalizeWssReportHours(settings[field]);
+          } else if (field === 'auto_discovery') {
+            siteOptions[field] = normalizeBooleanSetting(settings[field]);
           } else if (field === 'show_three_net_details') {
             siteOptions[field] = normalizeBooleanSetting(settings[field]);
           } else if (field === 'notification_timezone') {
             siteOptions[field] = normalizeNotificationTimezone(settings[field]);
+          } else if (field === 'notification_language') {
+            siteOptions[field] = normalizeNotificationLanguage(settings[field]);
           } else if (field === 'expire_notification_time') {
             siteOptions[field] = normalizeExpireNotificationTime(settings[field]);
           } else if (field === 'notification_webhook_enabled') {
@@ -930,16 +925,10 @@ export async function handleAdminAPI(request, env, sys, loadFullSettings = null,
             siteOptions[field] = normalizeNotificationWebhookBody(settings[field]);
           } else if (field === 'notification_template') {
             siteOptions[field] = normalizeNotificationTemplate(settings[field]);
-          } else if (field === 'github_oauth_enabled') {
-            siteOptions[field] = normalizeBooleanSetting(settings[field]);
-          } else if (field === 'github_client_id' || field === 'github_client_secret') {
-            siteOptions[field] = String(settings[field] || '').trim();
-          } else if (field === 'github_user_id') {
-            siteOptions[field] = /^[1-9]\d*$/.test(String(settings[field] || '').trim())
-              ? String(settings[field]).trim()
-              : '';
           } else if (field === 'theme_url') {
             siteOptions[field] = normalizedThemeUrl;
+          } else if (field === 'ua') {
+            siteOptions[field] = normalizedUserAgent;
           } else {
             siteOptions[field] = settings[field];
           }
