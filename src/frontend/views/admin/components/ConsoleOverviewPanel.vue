@@ -127,7 +127,7 @@ const updatedText = computed(() => {
   return sec < 60 ? `${sec} 秒前` : `${Math.floor(sec / 60)} 分钟前`
 })
 
-const consoleHref = (s) => `/#/admin/console/${encodeURIComponent(s.id)}${props.selectedApiIndex ? `?apiIndex=${props.selectedApiIndex}` : ''}`
+const consoleHref = (s) => `/admin#/admin/console/${encodeURIComponent(s.id)}${props.selectedApiIndex ? `?apiIndex=${props.selectedApiIndex}` : ''}`
 
 const load = async (refresh = false) => {
   loading.value = true

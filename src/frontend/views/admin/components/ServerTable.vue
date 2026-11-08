@@ -482,5 +482,5 @@ const getServerQuery = () => props.selectedApiIndex ? `?apiIndex=${props.selecte
 // 详情页是公开页面，走域名根路径入口 /#/server/:id
 const getServerDetailHref = (server) => `/#/server/${encodeURIComponent(server.id)}${getServerQuery()}`
 // 二开：点名字进入监控控制台
-const getServerConsoleHref = (server) => `/#/admin/console/${encodeURIComponent(server.id)}${getServerQuery()}`
+const getServerConsoleHref = (server) => `/admin#/admin/console/${encodeURIComponent(server.id)}${getServerQuery()}`
 </script>
