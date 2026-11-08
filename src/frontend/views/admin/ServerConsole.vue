@@ -106,10 +106,50 @@
           </div>
         </template>
 
+        <!-- 自动发现 -->
+        <div v-if="discovered.at" class="disc-box">
+          <div class="disc-head">
+            <div class="info-title">🔎 自动发现</div>
+            <span class="svc-meta">{{ discText }}</span>
+          </div>
+          <template v-if="discovered.known.length">
+            <div class="disc-sub">
+              认出 {{ discovered.known.length }} 个服务，点「加入」就会进档案并开始检查
+              <button class="mini-btn" :disabled="discSaving" @click="addDiscovered(discovered.known)">全部加入</button>
+            </div>
+            <div class="disc-list">
+              <div v-for="item in discovered.known" :key="item.check + item.target" class="disc-item">
+                <span class="disc-icon">{{ item.icon }}</span>
+                <span class="disc-name">{{ item.name }}</span>
+                <code class="disc-raw">{{ item.raw }}</code>
+                <button class="mini-btn" :disabled="discSaving" @click="addDiscovered([item])">加入</button>
+                <button class="mini-btn ghost" :disabled="discSaving" @click="ignoreDiscovered(item)">忽略</button>
+              </div>
+            </div>
+          </template>
+          <div v-else class="disc-sub">没有新的已知服务可加。</div>
+          <details v-if="discovered.unknown.length" class="disc-more">
+            <summary>其他在运行、没认出来的服务（{{ discovered.unknown.length }}）——加入后在「编辑档案」里改个名字就行</summary>
+            <div class="disc-list">
+              <div v-for="item in discovered.unknown" :key="item.check + item.target" class="disc-item">
+                <span class="disc-icon">{{ item.icon }}</span>
+                <code class="disc-name">{{ item.name }}</code>
+                <span class="disc-raw">{{ item.desc }}</span>
+                <button class="mini-btn" :disabled="discSaving" @click="addDiscovered([item])">加入</button>
+                <button class="mini-btn ghost" :disabled="discSaving" @click="ignoreDiscovered(item)">忽略</button>
+              </div>
+            </div>
+          </details>
+          <div v-if="discovered.ports.length" class="disc-ports">
+            <span>本机监听端口：</span>
+            <code v-for="port in discovered.ports" :key="port">{{ port }}</code>
+          </div>
+        </div>
+
         <!-- 状态脚本 -->
         <details class="agent-box">
           <summary>📡 状态上报脚本（让服务卡片显示运行中 / inactive）</summary>
-          <p class="agent-tip">脚本只往外发数据，不开端口、不接收命令，每 60 秒用 <code>systemctl is-active</code> / <code>pgrep</code> / 监听端口 检查一次你在档案里填的服务。令牌只能写这台机器的状态。</p>
+          <p class="agent-tip">脚本只往外发数据，不开端口、不接收命令，每 60 秒用 <code>systemctl is-active</code> / <code>pgrep</code> / 监听端口 检查一次你在档案里填的服务；每 10 分钟列一次在跑的服务名、进程名和监听端口，用来做「自动发现」（不读配置、命令行参数或密码）。令牌只能写这台机器的状态。</p>
           <div class="agent-row">
             <span class="info-label">安装（有 systemd，root）：</span>
             <code class="agent-cmd">{{ installCmd }}</code>
@@ -201,6 +241,7 @@ import { http, isAdminLoggedIn } from '../../utils/http'
 import { fetchServerDetail, getFlagRegionCode, isServerOnline } from '../../utils/api.js'
 import { getPublicAssetUrl, getApiBases } from '../../utils/config.js'
 import { copyTextToClipboard } from '../../utils/clipboard.js'
+import { buildDiscovered } from './consoleDiscover.js'
 
 
 const DEFAULT_ICONS = ['🖥️', '📁', '📊', '🛡️', '🎯', '🚀', '🌐', '🔐', '🧰', '🐳', '📡', '🗄️', '🤖', '🎬', '🔧', '⚡', '📦', '🔗']
@@ -262,7 +303,8 @@ const load = async () => {
 
 const normalizeProfile = (p) => ({
   blocks: Array.isArray(p?.blocks) ? p.blocks.map(b => ({ ...b, rows: Array.isArray(b.rows) ? b.rows : [] })) : [],
-  services: Array.isArray(p?.services) ? p.services : []
+  services: Array.isArray(p?.services) ? p.services : [],
+  ignored: Array.isArray(p?.ignored) ? p.ignored : []
 })
 
 const startEdit = () => {
@@ -285,6 +327,37 @@ const save = async () => {
   } finally {
     saving.value = false
   }
+}
+
+// 自动发现：加入档案 / 忽略，直接保存
+const discSaving = ref(false)
+const discovered = computed(() => buildDiscovered(status.value?._disc, profile.value))
+const discText = computed(() => {
+  const at = discovered.value.at
+  if (!at) return ''
+  const min = Math.max(0, Math.floor((now.value / 1000 - at) / 60))
+  return `${min < 1 ? '刚刚' : min + ' 分钟前'}扫描 · 每 10 分钟一次`
+})
+const saveProfileDirect = async (next) => {
+  discSaving.value = true
+  error.value = ''
+  try {
+    const res = await consoleApi({ action: 'save', id: serverId.value, profile: next })
+    if (res?.error) { error.value = `保存失败：${res.error}`; return }
+    profile.value = normalizeProfile(res.data.profile)
+  } finally {
+    discSaving.value = false
+  }
+}
+const addDiscovered = (items) => {
+  const next = JSON.parse(JSON.stringify(profile.value))
+  for (const it of items) next.services.push({ key: '', name: it.name, icon: it.icon, desc: it.desc || '', check: it.check, target: it.target })
+  return saveProfileDirect(next)
+}
+const ignoreDiscovered = (item) => {
+  const next = JSON.parse(JSON.stringify(profile.value))
+  next.ignored = [...(next.ignored || []), item.target]
+  return saveProfileDirect(next)
 }
 
 const addBlock = () => draft.value.blocks.push({ title: '', icon: '📊', rows: [{ label: '管理后台', value: '', kind: 'link', note: '' }] })
@@ -474,6 +547,22 @@ onUnmounted(() => {
 .w-note { width: 170px !important; flex: none; }
 
 
+
+
+.disc-box { margin-top: 24px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 16px 20px; }
+.disc-head { display: flex; justify-content: space-between; align-items: baseline; }
+.disc-sub { font-size: 13px; color: var(--text-secondary); margin: 8px 0 10px; display: flex; gap: 10px; align-items: center; }
+.disc-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; }
+.disc-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 10px; border-radius: 8px; background: var(--bg-secondary); min-width: 0; }
+.disc-icon { width: 20px; text-align: center; }
+.disc-name { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.disc-raw { color: var(--text-secondary); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-btn.ghost { opacity: .6; }
+.disc-more { margin-top: 12px; }
+.disc-more summary { cursor: pointer; font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; }
+.disc-ports { margin-top: 12px; font-size: 12px; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.disc-ports code { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; padding: 1px 7px; color: var(--text-primary); }
+@media (max-width: 760px) { .disc-list { grid-template-columns: 1fr; } }
 
 @media (max-width: 1100px) {
   .res-grid { grid-template-columns: repeat(2, 1fr); }

@@ -7,7 +7,8 @@ import { checkAuth } from '../middleware/auth.js';
 import { createSuccessResponse, createBadRequestResponse, createUnauthorizedResponse, createNotFoundResponse } from '../utils/errors.js';
 
 const MAX_PROFILE_BYTES = 64 * 1024;
-const MAX_REPORT_BYTES = 16 * 1024;
+const MAX_REPORT_BYTES = 48 * 1024;
+const DISCOVER_INTERVAL = 600;
 const CHECK_TYPES = new Set(['systemd', 'process', 'port', 'none']);
 const ICONS = ['🖥️', '📁', '📊', '🛡️', '🎯', '🚀', '🌐', '🔐', '🧰', '🐳', '📡', '🗄️', '🤖', '🎬', '🔧', '⚡', '📦', '🔗'];
 
@@ -68,7 +69,9 @@ export function sanitizeProfile(input) {
   const src = input && typeof input === 'object' ? input : {};
   const blocks = Array.isArray(src.blocks) ? src.blocks.slice(0, 30) : [];
   const services = Array.isArray(src.services) ? src.services.slice(0, 60) : [];
+  const ignored = Array.isArray(src.ignored) ? src.ignored.slice(0, 200) : [];
   return {
+    ignored: [...new Set(ignored.map(x => str(x, 80).replace(/[^A-Za-z0-9@._:\/+=\- ]/g, '')).filter(Boolean))],
     blocks: blocks.map(block => ({
       title: str(block?.title, 80),
       icon: str(block?.icon, 8),
@@ -210,11 +213,18 @@ export async function handleConsoleReport(request, env) {
   if (!id) return textResponse('unauthorized\n', 401);
   await ensureTables(env.DB);
 
-  const { data: profile } = await readJsonRow(env.DB, 'console_profiles', 'updated_at', id);
+  const [{ data: profile }, { data: prevStatus }] = await Promise.all([
+    readJsonRow(env.DB, 'console_profiles', 'updated_at', id),
+    readJsonRow(env.DB, 'console_status', 'reported_at', id)
+  ]);
   const services = (profile?.services || []).filter(s => s.check && s.check !== 'none' && s.target);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const prevDisc = prevStatus?._disc;
 
   if (request.method === 'GET') {
     const lines = services.map(s => `${s.key}\t${s.check}\t${s.target}`);
+    // 自动发现每 10 分钟做一次，由服务端决定，脚本看到 #discover 才扫描
+    if (!prevDisc || nowSec - (prevDisc.at || 0) > DISCOVER_INTERVAL) lines.unshift('#discover');
     return textResponse(lines.join('\n') + (lines.length ? '\n' : ''));
   }
 
@@ -222,12 +232,35 @@ export async function handleConsoleReport(request, env) {
   if (text.length > MAX_REPORT_BYTES) return textResponse('too large\n', 413);
   const known = new Set(services.map(s => s.key));
   const result = {};
-  for (const line of text.split('\n')) {
-    const [key, state] = line.trim().split('\t');
+  const disc = { at: nowSec, units: [], procs: [], ports: [] };
+  let sawDisc = false;
+  const clean = (v, max) => str(v, max).replace(/[^A-Za-z0-9@._:\/+=\- ]/g, '');
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    const parts = line.split('\t');
+    if (parts[0] === '#disc') { sawDisc = true; continue; }
+    if (parts[0] === '#unit' && disc.units.length < 200) {
+      const name = clean(parts[1], 80);
+      if (name) disc.units.push([name, str(parts[2], 120)]);
+      continue;
+    }
+    if (parts[0] === '#proc' && disc.procs.length < 300) {
+      const name = clean(parts[1], 40);
+      if (name && !disc.procs.includes(name)) disc.procs.push(name);
+      continue;
+    }
+    if (parts[0] === '#port' && disc.ports.length < 200) {
+      const port = parseInt(parts[1], 10);
+      if (port > 0 && port < 65536 && !disc.ports.includes(port)) disc.ports.push(port);
+      continue;
+    }
+    const key = parts[0].trim();
     if (!key || !known.has(key)) continue;
-    result[key] = str(state, 20).replace(/[^a-z\-]/g, '') || 'unknown';
+    result[key] = str(parts[1], 20).replace(/[^a-z\-]/g, '') || 'unknown';
   }
-  const now = Math.floor(Date.now() / 1000);
+  if (sawDisc) result._disc = disc;
+  else if (prevDisc) result._disc = prevDisc;
+  const now = nowSec;
   await env.DB.prepare(
     `INSERT INTO console_status (server_id, data, reported_at) VALUES (?, ?, ?)
      ON CONFLICT(server_id) DO UPDATE SET data = excluded.data, reported_at = excluded.reported_at`
@@ -246,6 +279,7 @@ const AGENT_SCRIPT = `#!/bin/sh
 # cfsm-console agent：只读检查服务状态并上报到你的探针 Worker
 # - 不监听任何端口，不接收也不执行任何远程命令
 # - 只做三种检查：systemctl is-active / pgrep -f / 本机监听端口
+# - 每 10 分钟做一次自动发现：列出运行中的服务名、进程名、监听端口（不读命令行参数、配置或密码）
 # 用法：
 #   安装（systemd，root 执行）：sh agent.sh install <WORKER_URL> <SERVER_ID> <TOKEN>
 #   无 systemd 的容器：        sh agent.sh loop <WORKER_URL> <SERVER_ID> <TOKEN> &
@@ -276,14 +310,36 @@ check_one() {
   esac
 }
 
+# 自动发现：只读列出正在运行的 systemd 服务、进程名、本机监听端口（不含命令行参数）
+discover() {
+  printf '#disc\\n'
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | head -n 200 |
+      awk '{u=$1; $1=$2=$3=$4=""; sub(/^ +/, ""); printf "#unit\\t%s\\t%s\\n", u, $0}'
+  fi
+  ps -eo ppid=,comm= 2>/dev/null | awk '$1 != 0 && $1 != 2 {print $2}' | sort -u | head -n 300 | awk '{printf "#proc\\t%s\\n", $1}'
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnH 2>/dev/null | awk '{print $4}'
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk 'NR>2{print $4}'
+  else
+    for f in /proc/net/tcp /proc/net/tcp6; do
+      [ -r "$f" ] && awk 'NR>1 && $4=="0A"{split($2,a,":"); print a[2]}' "$f" | while read -r h; do printf ':%d\\n' "0x$h"; done
+    done
+  fi | sed 's/.*[:.]//' | grep -E '^[0-9]+$' | sort -un | head -n 200 | awk '{printf "#port\\t%s\\n", $1}'
+}
+
 run_once() {
   url="$1"; id="$2"; token="$3"
   q="id=$id&token=$token"
   list=$(curl -fsS -m 15 -A cfsm-console "$url/console/report?$q") || return 0
   out=""
   tab=$(printf '\\t')
+  case "$list" in "#discover"*) out="$(discover)
+";; esac
   while IFS="$tab" read -r key type target; do
     [ -n "$key" ] || continue
+    [ "$key" = "#discover" ] && continue
     st=$(check_one "$type" "$target")
     out="$out$key$tab$st
 "
