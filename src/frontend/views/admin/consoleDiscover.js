@@ -1,6 +1,18 @@
 // 二开：自动发现对照表 —— 把 systemd 服务名 / 进程名翻译成正式名称
 // re 同时匹配 systemd 服务名（去掉 .service）和进程名；先匹配到的规则生效
 export const KNOWN_SERVICES = [
+  { id: 'sillytavern', re: /^(sillytavern|silly-tavern|st|tavern|jiuguan)$/i, name: 'SillyTavern 酒馆', icon: '🍺', desc: 'AI 角色扮演前端' },
+  { id: 'magpie', re: /^magpie/i, name: 'Magpie', icon: '🤖', desc: '' },
+  { id: 'deepseek', re: /^(deepseek.*|ds2api|deepseek2api|deepseek-free-api)$/i, name: 'DeepSeek API 转接', icon: '🤖', desc: '' },
+  { id: 'new-api', re: /^(new-api|one-api|veloera|done-hub)$/i, name: 'New API / One API 中转', icon: '🔀', desc: '' },
+  { id: 'open-webui', re: /^open-webui$/i, name: 'Open WebUI', icon: '💬', desc: '' },
+  { id: 'lobe-chat', re: /^lobe-?chat(-database)?$/i, name: 'LobeChat', icon: '💬', desc: '' },
+  { id: 'npm', re: /^nginx-proxy-manager$/i, name: 'Nginx Proxy Manager', icon: '🌐', desc: '' },
+  { id: 'portainer', re: /^portainer(-ce|-ee)?$/i, name: 'Portainer 容器管理', icon: '🐳', desc: '' },
+  { id: 'watchtower', re: /^watchtower$/i, name: 'Watchtower 自动更新', icon: '🐳', desc: '' },
+  { id: 'vaultwarden', re: /^(vaultwarden|bitwarden)(-server)?$/i, name: 'Vaultwarden 密码库', icon: '🔐', desc: '' },
+  { id: 'n8n', re: /^n8n$/i, name: 'n8n 自动化', icon: '⚡', desc: '' },
+  { id: 'qinglong', re: /^qinglong$/i, name: '青龙面板', icon: '🧰', desc: '' },
   { id: 'x-ui', re: /^(x-ui|3x-ui)$/i, name: '3x-ui 面板', icon: '🔐', desc: 'Xray 多协议管理面板' },
   { id: 'xray', re: /^xray$/i, name: 'Xray 代理核心', icon: '🚀', desc: 'VLESS / VMess / Trojan / Reality' },
   { id: 'sing-box', re: /^sing-box$/i, name: 'Sing-box 网络加速核心', icon: '🚀', desc: 'VLESS-Reality / Hysteria2 / TUIC' },
@@ -33,7 +45,7 @@ export const KNOWN_SERVICES = [
   { id: 'mysql', re: /^(mysql|mysqld|mariadb|mariadbd)$/i, name: 'MySQL / MariaDB 数据库', icon: '🗄️', desc: '' },
   { id: 'postgres', re: /^(postgresql(@.+)?|postgres)$/i, name: 'PostgreSQL 数据库', icon: '🗄️', desc: '' },
   { id: 'redis', re: /^(redis|redis-server)$/i, name: 'Redis', icon: '🗄️', desc: '' },
-  { id: 'hermes', re: /^hermes(-gateway|-agent)?$/i, name: 'Hermes Agent 网关', icon: '🤖', desc: '' },
+  { id: 'hermes', re: /^hermes(-gateway|-agent)?(-.*)?$/i, name: 'Hermes Agent 网关', icon: '🤖', desc: '' },
   { id: 'keepalive', re: /^(keepalive|keep-alive|lookbusy|oci-keepalive)$/i, name: '甲骨文防回收保活', icon: '🛡️', desc: '' },
   { id: 'qbittorrent', re: /^qbittorrent(-nox)?(@.+)?$/i, name: 'qBittorrent', icon: '📦', desc: '' },
   { id: 'aria2', re: /^aria2c?$/i, name: 'Aria2 下载', icon: '📦', desc: '' },
@@ -50,7 +62,7 @@ const NOISE = [
   /^udisks2$/, /^accounts-daemon$/, /^chrony/, /^ntp/, /^qemu-guest-agent$/, /^oracle-cloud-agent/, /^google-/, /^cloud-/,
   /^packagekit$/, /^rpcbind$/, /^user@/, /^fwupd$/, /^thermald$/, /^upower$/, /^wpa_supplicant$/, /^NetworkManager/,
   /^iscsid$/, /^open-vm-tools$/, /^vmtoolsd$/, /^cfsm-console$/, /^containerd$/, /^lvm2/, /^blk-availability$/, /^apport$/,
-  /^lxcfs$/, /^iptables/, /^netfilter/, /^ufw$/, /^firewalld$/, /^haveged$/, /^rngd$/, /^auditd$/, /^tuned$/, /^kdump/,
+  /^lxcfs$/, /^acpid$/, /^ssh-agent$/, /^gpg-agent$/, /^modprobe@/, /^sysstat$/, /^nftables$/, /^e2scrub/, /^ec2-instance-connect/, /^chronyd$/, /^iptables/, /^netfilter/, /^ufw$/, /^firewalld$/, /^haveged$/, /^rngd$/, /^auditd$/, /^tuned$/, /^kdump/,
   /^logind$/, /^uuidd$/, /^nscd$/, /^nslcd$/, /^sssd/, /^hv-kvp/, /^waagent$/, /^walinuxagent$/, /^amazon-ssm-agent$/,
   /^snap-/, /^rc-local$/, /^console-/, /^keyboard-/, /^setvtrgb$/, /^plymouth/, /^mdmonitor$/, /^smartd$/, /^hostguard/,
   /^uniagent/, /^telescope$/, /^aliyun/, /^AliYunDun/, /^tat_agent$/, /^YDService$/, /^qcloud/, /^stargate/, /^barad_agent$/
@@ -66,7 +78,7 @@ const targetKey = (check, target) => `${check}:${String(target || '').toLowerCas
 
 // 由上报的 _disc 生成“发现”列表；已在档案里或已忽略的不再出现
 export function buildDiscovered(disc, profile) {
-  if (!disc) return { known: [], unknown: [], ports: [], at: 0 }
+  if (!disc) return { known: [], unknown: [], ports: [], at: 0, hasDocker: false }
   const inProfile = new Set((profile?.services || []).map(s => targetKey(s.check, s.target)))
   const ignored = new Set((profile?.ignored || []).map(x => String(x).toLowerCase()))
   const usedIds = new Set((profile?.services || []).map(s => matchKnown(s.target)?.id).filter(Boolean))
@@ -100,6 +112,21 @@ export function buildDiscovered(disc, profile) {
       unknown.push({ name: proc, icon: '🧩', desc: '进程', check: 'process', target: proc, raw: proc })
     }
   }
+  // Docker 容器：按容器名或镜像名（去掉仓库前缀和标签）对照；没认出的也列出来
+  const containers = Array.isArray(disc.containers) ? disc.containers : []
+  for (const [cname, image, state] of containers) {
+    if (inProfile.has(targetKey('docker', cname))) continue
+    if (ignored.has(String(cname).toLowerCase())) continue
+    const base = String(image || '').split('@')[0].split('/').pop().split(':')[0]
+    const k = matchKnown(cname) || matchKnown(base)
+    const stateText = state && state !== 'running' ? `（${state}）` : ''
+    if (k && !seenIds.has(k.id) && !usedIds.has(k.id)) {
+      seenIds.add(k.id)
+      known.push({ ...k, desc: k.desc || `Docker · ${base}`, check: 'docker', target: cname, raw: `🐳 ${cname}${stateText}` })
+    } else {
+      unknown.push({ name: cname, icon: '🐳', desc: `Docker · ${image}${stateText}`, check: 'docker', target: cname, raw: cname })
+    }
+  }
   const ports = (Array.isArray(disc.ports) ? disc.ports : []).filter(p => Number(p) > 0).sort((a, b) => a - b)
-  return { known, unknown, ports, at: Number(disc.at) || 0 }
+  return { known, unknown, ports, at: Number(disc.at) || 0, hasDocker: Array.isArray(disc.containers) && disc.containers.length > 0, dockerSeen: Array.isArray(disc.procs) && disc.procs.some(p => /^(dockerd|containerd-shim.*)$/.test(p)) }
 }

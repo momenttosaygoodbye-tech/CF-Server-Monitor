@@ -140,6 +140,7 @@
               </div>
             </div>
           </details>
+          <div v-if="discovered.dockerSeen && !discovered.hasDocker" class="disc-sub">🐳 这台装了 Docker，但还读不到容器列表：在本机重新执行一次下面的安装命令即可（只需一次）。</div>
           <div v-if="discovered.ports.length" class="disc-ports">
             <span>本机监听端口：</span>
             <code v-for="port in discovered.ports" :key="port">{{ port }}</code>
@@ -149,7 +150,7 @@
         <!-- 状态脚本 -->
         <details class="agent-box">
           <summary>📡 状态上报脚本（让服务卡片显示运行中 / inactive）</summary>
-          <p class="agent-tip">脚本只往外发数据，不开端口、不接收命令，每 60 秒用 <code>systemctl is-active</code> / <code>pgrep</code> / 监听端口 检查一次你在档案里填的服务；每 10 分钟列一次在跑的服务名、进程名和监听端口，用来做「自动发现」（不读配置、命令行参数或密码）。令牌只能写这台机器的状态。</p>
+          <p class="agent-tip">脚本只往外发数据，不开端口、不接收命令，每 60 秒用 <code>systemctl is-active</code> / <code>pgrep</code> / 监听端口 / Docker 容器状态 检查一次你在档案里填的服务；每 10 分钟列一次在跑的服务名、进程名和监听端口，用来做「自动发现」（不读配置、命令行参数或密码）。令牌只能写这台机器的状态。</p>
           <div class="agent-row">
             <span class="info-label">安装（有 systemd，root）：</span>
             <code class="agent-cmd">{{ installCmd }}</code>
@@ -217,9 +218,10 @@
               <option value="systemd">systemd 服务</option>
               <option value="process">进程</option>
               <option value="port">监听端口</option>
+              <option value="docker">Docker 容器</option>
               <option value="none">不检查</option>
             </select>
-            <input v-model="svc.target" class="form-input w-note" :disabled="svc.check === 'none'" :placeholder="svc.check === 'port' ? '8050' : svc.check === 'process' ? 'xray' : 'sing-box'">
+            <input v-model="svc.target" class="form-input w-note" :disabled="svc.check === 'none'" :placeholder="svc.check === 'port' ? '8050' : svc.check === 'process' ? 'xray' : svc.check === 'docker' ? '容器名，如 sillytavern' : 'sing-box'">
             <button class="mini-btn" :disabled="si === 0" @click="move(draft.services, si, -1)">↑</button>
             <button class="mini-btn" :disabled="si === draft.services.length - 1" @click="move(draft.services, si, 1)">↓</button>
             <button class="mini-btn danger" @click="draft.services.splice(si, 1)">✕</button>

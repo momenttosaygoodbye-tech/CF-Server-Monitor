@@ -9,7 +9,7 @@ import { createSuccessResponse, createBadRequestResponse, createUnauthorizedResp
 const MAX_PROFILE_BYTES = 64 * 1024;
 const MAX_REPORT_BYTES = 48 * 1024;
 const DISCOVER_INTERVAL = 600;
-const CHECK_TYPES = new Set(['systemd', 'process', 'port', 'none']);
+const CHECK_TYPES = new Set(['systemd', 'process', 'port', 'docker', 'none']);
 const ICONS = ['🖥️', '📁', '📊', '🛡️', '🎯', '🚀', '🌐', '🔐', '🧰', '🐳', '📡', '🗄️', '🤖', '🎬', '🔧', '⚡', '📦', '🔗'];
 
 let tablesReady = false;
@@ -224,7 +224,9 @@ export async function handleConsoleReport(request, env) {
   if (request.method === 'GET') {
     const lines = services.map(s => `${s.key}\t${s.check}\t${s.target}`);
     // 自动发现每 10 分钟做一次，由服务端决定，脚本看到 #discover 才扫描
-    if (!prevDisc || nowSec - (prevDisc.at || 0) > DISCOVER_INTERVAL) lines.unshift('#discover');
+    const agentV = parseInt(url.searchParams.get('v') || '1', 10) || 1;
+    // 脚本升级后（v 变大）立刻重扫一次，不用等 10 分钟
+    if (!prevDisc || nowSec - (prevDisc.at || 0) > DISCOVER_INTERVAL || agentV > (prevDisc.v || 1)) lines.unshift('#discover');
     return textResponse(lines.join('\n') + (lines.length ? '\n' : ''));
   }
 
@@ -232,7 +234,7 @@ export async function handleConsoleReport(request, env) {
   if (text.length > MAX_REPORT_BYTES) return textResponse('too large\n', 413);
   const known = new Set(services.map(s => s.key));
   const result = {};
-  const disc = { at: nowSec, units: [], procs: [], ports: [] };
+  const disc = { at: nowSec, v: Math.min(parseInt(url.searchParams.get('v') || '1', 10) || 1, 99), units: [], procs: [], ports: [], containers: [] };
   let sawDisc = false;
   const clean = (v, max) => str(v, max).replace(/[^A-Za-z0-9@._:\/+=\- ]/g, '');
   for (const raw of text.split('\n')) {
@@ -247,6 +249,13 @@ export async function handleConsoleReport(request, env) {
     if (parts[0] === '#proc' && disc.procs.length < 300) {
       const name = clean(parts[1], 40);
       if (name && !disc.procs.includes(name)) disc.procs.push(name);
+      continue;
+    }
+    if (parts[0] === '#ctr' && disc.containers.length < 200) {
+      const name = str(parts[1], 64).replace(/[^A-Za-z0-9_.\-]/g, '');
+      const image = str(parts[2], 160).replace(/[^A-Za-z0-9_.\-\/:@]/g, '');
+      const state = str(parts[3], 20).replace(/[^a-z]/g, '');
+      if (name) disc.containers.push([name, image, state]);
       continue;
     }
     if (parts[0] === '#port' && disc.ports.length < 200) {
@@ -278,7 +287,8 @@ export function handleConsoleAgentScript() {
 const AGENT_SCRIPT = `#!/bin/sh
 # cfsm-console agent：只读检查服务状态并上报到你的探针 Worker
 # - 不监听任何端口，不接收也不执行任何远程命令
-# - 只做三种检查：systemctl is-active / pgrep -f / 本机监听端口
+# - 只做四种检查：systemctl is-active / pgrep -f / 本机监听端口 / Docker 容器状态
+# - Docker：root 只执行固定的 docker ps -a（名字、镜像、状态）写到 /run，脚本本体不接触 docker.sock
 # - 每 10 分钟做一次自动发现：列出运行中的服务名、进程名、监听端口（不读命令行参数、配置或密码）
 # 用法：
 #   安装（systemd，root 执行）：sh agent.sh install <WORKER_URL> <SERVER_ID> <TOKEN>
@@ -306,8 +316,30 @@ check_one() {
         echo unknown; return
       fi
       echo inactive;;
+    docker)
+      list=$(containers) || { echo unknown; return; }
+      [ -n "$list" ] || { echo unknown; return; }
+      st=$(printf '%s\\n' "$list" | awk -F '\\t' -v n="$target" '$1==n{print $3; exit}')
+      case "$st" in running) echo active;; "") echo inactive;; *) echo "$st";; esac;;
     *) echo unknown;;
   esac
+}
+
+CTR_FILE=/run/cfsm-console/containers
+
+# Docker 容器清单（名字、镜像、状态）。systemd 安装时由 root 预先执行固定的 docker ps 写到 $CTR_FILE，
+# 脚本本身仍以 nobody 运行、不碰 docker.sock；loop 模式下当前用户能用 docker 就直接读
+containers() {
+  if [ -r "$CTR_FILE" ]; then cat "$CTR_FILE"; return 0; fi
+  command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}\\t{{.Image}}\\t{{.State}}' 2>/dev/null
+}
+
+collect() {
+  command -v docker >/dev/null 2>&1 || return 0
+  mkdir -p /run/cfsm-console
+  docker ps -a --format '{{.Names}}\\t{{.Image}}\\t{{.State}}' > /run/cfsm-console/containers.tmp 2>/dev/null || { rm -f /run/cfsm-console/containers.tmp; return 0; }
+  chmod 644 /run/cfsm-console/containers.tmp
+  mv -f /run/cfsm-console/containers.tmp "$CTR_FILE"
 }
 
 # 自动发现：只读列出正在运行的 systemd 服务、进程名、本机监听端口（不含命令行参数）
@@ -317,6 +349,7 @@ discover() {
     systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | head -n 200 |
       awk '{u=$1; $1=$2=$3=$4=""; sub(/^ +/, ""); printf "#unit\\t%s\\t%s\\n", u, $0}'
   fi
+  containers | head -n 200 | awk -F '\\t' 'NF>=3{printf "#ctr\\t%s\\t%s\\t%s\\n", $1, $2, $3}'
   ps -eo ppid=,comm= 2>/dev/null | awk '$1 != 0 && $1 != 2 {print $2}' | sort -u | head -n 300 | awk '{printf "#proc\\t%s\\n", $1}'
   if command -v ss >/dev/null 2>&1; then
     ss -ltnH 2>/dev/null | awk '{print $4}'
@@ -331,7 +364,7 @@ discover() {
 
 run_once() {
   url="$1"; id="$2"; token="$3"
-  q="id=$id&token=$token"
+  q="id=$id&token=$token&v=2"
   list=$(curl -fsS -m 15 -A cfsm-console "$url/console/report?$q") || return 0
   out=""
   tab=$(printf '\\t')
@@ -351,6 +384,7 @@ EOF
 
 case "\${1:-}" in
   run) run_once "$2" "$3" "$4";;
+  collect) collect;;
   loop)
     while true; do run_once "$2" "$3" "$4"; sleep "\${CFSM_CONSOLE_INTERVAL:-60}"; done;;
   install)
@@ -369,6 +403,8 @@ After=network-online.target
 Type=oneshot
 User=nobody
 EnvironmentFile=$DIR/env
+RuntimeDirectory=cfsm-console
+ExecStartPre=+/bin/sh $DIR/agent.sh collect
 ExecStart=/bin/sh $DIR/agent.sh run \\\${URL} \\\${ID} \\\${TOKEN}
 NoNewPrivileges=true
 ProtectSystem=strict
