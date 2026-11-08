@@ -89,9 +89,17 @@
                   <OsIcon :os="server.os" />
                 </span>
                 <a
-                  :href="getServerDetailHref(server)"
+                  :href="getServerConsoleHref(server)"
                   class="server-name-link"
+                  title="打开监控控制台"
                 >{{ server.name }}</a>
+                <a
+                  :href="getServerDetailHref(server)"
+                  class="server-detail-mini-link"
+                  style="color: var(--text-secondary); font-size: 12px; margin-left: 4px; text-decoration: none;"
+                  title="公开详情页"
+                  target="_blank"
+                >↗</a>
               </div>
             </td>
             <td>
@@ -473,4 +481,6 @@ const getAgentVersionClass = (version) => {
 const getServerQuery = () => props.selectedApiIndex ? `?apiIndex=${props.selectedApiIndex}` : ''
 // 详情页是公开页面，走域名根路径入口 /#/server/:id
 const getServerDetailHref = (server) => `/#/server/${encodeURIComponent(server.id)}${getServerQuery()}`
+// 二开：点名字进入监控控制台
+const getServerConsoleHref = (server) => `/#/admin/console/${encodeURIComponent(server.id)}${getServerQuery()}`
 </script>

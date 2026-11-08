@@ -17,6 +17,12 @@ const routes = [
     component: () => import('../views/admin/index.vue')
   },
   {
+    // 二开：监控控制台（仅管理员）
+    path: '/admin/console/:id',
+    name: 'ServerConsole',
+    component: () => import('../views/admin/ServerConsole.vue')
+  },
+  {
     path: '/server/:id',
     name: 'Server',
     component: () => import('../views/ServerDetail.vue')

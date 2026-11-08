@@ -2,6 +2,7 @@ import { initDatabase, weeklyCleanup, getMetricsHistory, clearHistory } from './
 import { checkOfflineNodes, checkExpiringServers, checkResourceAlerts } from './services/notification.js';
 import { updateDatabase } from './database/updateDatabase.js';
 import { handleAdminAPI } from './handlers/admin.js';
+import { handleConsoleAPI, handleConsoleReport, handleConsoleAgentScript } from './handlers/console.js'; // 二开：监控控制台
 import { serveFrontend } from './handlers/frontend.js';
 import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } from './handlers/update.js';
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
@@ -412,6 +413,14 @@ export default {
         await ensureSiteSettings();
         return handleAdminAPI(request, env, sys, ensureFullSettings, ctx);
       }},
+      // 二开：监控控制台
+      { method: 'POST', path: '/console/api', handler: async () => {
+        await ensureSiteSettings();
+        return handleConsoleAPI(request, env, sys);
+      }},
+      { method: 'GET', path: '/console/report', handler: () => handleConsoleReport(request, env) },
+      { method: 'POST', path: '/console/report', handler: () => handleConsoleReport(request, env) },
+      { method: 'GET', path: '/console/agent.sh', handler: () => handleConsoleAgentScript() },
       { method: 'POST', path: '/updateDatabase', handler: async () => {
         await ensureSiteSettings();
         if (!await checkAuth(request, env, sys)) {
