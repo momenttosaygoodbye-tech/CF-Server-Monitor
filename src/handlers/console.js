@@ -287,7 +287,7 @@ export async function handleConsoleReport(request, env) {
     if (parts[0] === '#site' && disc.sites.length < 100) {
       const host = str(parts[1], 253).toLowerCase();
       const port = str(parts[2], 5).replace(/[^0-9]/g, '');
-      if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(host) && port) disc.sites.push([host, port]);
+      if (/^[a-z0-9*][a-z0-9.-]*\.[a-z]{2,}(:[0-9]{1,5})?$/.test(host) && port) disc.sites.push([host, port]);
       continue;
     }
     if (parts[0] === '#port' && disc.ports.length < 200) {
@@ -417,8 +417,9 @@ site_scan() {
       { sub(/\\r$/, ""); sub(/#.*/, ""); line = $0 }
       depth == 0 && line ~ /\\{[ \\t]*$/ {
         addr = line; sub(/\\{[ \\t]*$/, "", addr); n = split(addr, a, /[ ,\\t]+/); host = ""
-        for (i = 1; i <= n; i++) { h = a[i]; sub(/^https?:\\/\\//, "", h); sub(/:[0-9]+$/, "", h); sub(/\\/.*/, "", h)
-          if (h ~ /^[A-Za-z0-9*][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/) { host = h; break } }
+        for (i = 1; i <= n; i++) { h = a[i]; sub(/^https?:\\/\\//, "", h); sub(/\\/.*/, "", h); hp = ""
+          if (match(h, /:[0-9]+$/)) { hp = substr(h, RSTART + 1); h = substr(h, 1, RSTART - 1) }
+          if (h ~ /^[A-Za-z0-9*][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/) { host = h; if (hp != "" && hp != "443") host = h ":" hp; break } }
       }
       depth >= 1 && host != "" && $1 == "reverse_proxy" {
         for (i = 2; i <= NF; i++) { u = $i; if (u ~ /^[@\\/{]/) continue; sub(/^https?:\\/\\//, "", u); sub(/\\/.*/, "", u)
@@ -431,8 +432,11 @@ site_scan() {
   # Caddy 管理接口（本机 2019，只读）：配置不在 /etc/caddy 时（如 Docker 里的 Caddy）也能拿到，只摘域名和上游端口
   if command -v curl >/dev/null 2>&1; then
     curl -fsS -m 3 http://127.0.0.1:2019/config/ 2>/dev/null | head -c 2000000 | tr ',{}[]' '\\n\\n\\n\\n\\n' | awk -v lips="$LIPS" -F '"' '
+      $2 == "listen" { lw = 1; lp = ""; next }
+      lw && NF >= 2 && match($2, /:[0-9]+$/) { lp = substr($2, RSTART + 1); next }
+      { lw = 0 }
       $2 == "host" { want = 1; next }
-      want && NF >= 2 && $2 ~ /^[A-Za-z0-9*][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/ { host = $2; next }
+      want && NF >= 2 && $2 ~ /^[A-Za-z0-9*][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/ { host = $2; if (lp != "" && lp != "443") host = $2 ":" lp; next }
       { want = 0 }
       $2 == "dial" && host != "" { u = $4; if (match(u, /:[0-9]+$/)) { uh = substr(u, 1, RSTART - 1); gsub(/[\\[\\]]/, "", uh)
         if (uh == "" || uh ~ /^127\\./ || index(lips, " " uh " ")) print host "\\t" substr(u, RSTART + 1) } }
@@ -494,7 +498,7 @@ discover() {
 
 run_once() {
   url="$1"; id="$2"; token="$3"
-  q="id=$id&token=$token&v=6"
+  q="id=$id&token=$token&v=7"
   list=$(curl -fsS -m 15 -A cfsm-console "$url/console/report?$q") || return 0
   out=""
   tab=$(printf '\\t')
