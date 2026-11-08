@@ -200,7 +200,6 @@
             <input v-model="draft.tunnel.host" class="form-input w-label" :placeholder="'主机，默认 ' + (ipText || 'IP')">
             <input v-model="draft.tunnel.port" class="form-input w-kind" placeholder="SSH 端口，默认 22">
           </div>
-          <label class="agent-tip"><input v-model="draft.tunnel.ts" type="checkbox"> 我的电脑装了 Tailscale（勾上才会直接给 100.x 内网地址）</label>
         </div>
 
         <div class="edit-section">
@@ -445,10 +444,10 @@ const autoUrl = (block) => {
   const svc = linkedSvc(block)
   if (!svc) return null
   if ((block.rows || []).some(r => r.kind === 'link' && r.value)) return null
-  return serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: !!profile.value.tunnel?.ts })
+  return serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: false })
 }
 const fillUrl = (block, svc) => {
-  const r = serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: !!profile.value.tunnel?.ts })
+  const r = serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: false })
   if (!r || !r.url.startsWith('https://')) return
   const url = r.url
   const row = (block.rows || []).find(r => r.kind === 'link' && !r.value)
