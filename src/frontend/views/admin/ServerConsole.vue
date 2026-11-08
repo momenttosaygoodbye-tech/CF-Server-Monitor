@@ -68,26 +68,6 @@
         </div>
       </div>
 
-      <!-- 三网延迟与丢包 -->
-      <div class="net-box" :class="'lv-' + diag.level">
-        <div class="net-head">
-          <div class="info-title">📶 三网延迟与丢包</div>
-          <div class="net-diag"><b>{{ diag.title }}</b>{{ diag.text }}</div>
-        </div>
-        <div v-for="n in netRows" :key="n.key" class="net-row">
-          <span class="net-name">{{ n.name }}</span>
-          <span class="net-ping" :style="{ color: pingColor(n.ping) }">{{ formatPing(n.ping) }}</span>
-          <span class="net-dots" :title="'最近 ' + n.series.length + ' 个时段延迟'">
-            <i v-for="(pt, i) in n.series" :key="'p' + i" :style="{ background: pt === null ? (n.lossSeries[i] !== null && n.lossSeries[i] !== undefined ? 'var(--accent-red)' : 'var(--bg-hover)') : pingColor(pt) }"></i>
-          </span>
-          <span class="net-loss" :style="{ color: lossColor(n.loss) }">丢包 {{ formatLoss(n.loss) }}</span>
-          <span class="net-dots small">
-            <i v-for="(pt, i) in n.lossSeries" :key="'l' + i" :style="{ background: pt === null ? 'var(--bg-hover)' : lossColor(pt) }"></i>
-          </span>
-        </div>
-        <div v-if="!netRows.length" class="agent-tip">后台没开三网探测（设置里可配置电信 / 联通 / 移动节点）。</div>
-      </div>
-
       <!-- 信息块：查看模式 -->
       <template v-if="!editing">
         <div v-if="!profile.blocks.length && !profile.services.length" class="console-empty">
@@ -213,7 +193,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, inject } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import TerminalHeader from '../../components/TerminalHeader.vue'
 import Footer from '../../components/Footer.vue'
@@ -222,7 +202,6 @@ import { fetchServerDetail, getFlagRegionCode, isServerOnline } from '../../util
 import { getPublicAssetUrl, getApiBases } from '../../utils/config.js'
 import { copyTextToClipboard } from '../../utils/clipboard.js'
 
-import { getNets, diagnose, pingColor, lossColor, formatPing, formatLoss } from './consoleNet.js'
 
 const DEFAULT_ICONS = ['🖥️', '📁', '📊', '🛡️', '🎯', '🚀', '🌐', '🔐', '🧰', '🐳', '📡', '🗄️', '🤖', '🎬', '🔧', '⚡', '📦', '🔗']
 
@@ -256,14 +235,11 @@ const load = async () => {
   loading.value = true
   error.value = ''
   try {
-    const [detail, res, all] = await Promise.all([
+    const [detail, res] = await Promise.all([
       fetchServerDetail(encodeURIComponent(serverId.value), apiIndex.value),
-      consoleApi({ action: 'get', id: serverId.value }),
-      http.getByIndex('/api/servers', apiIndex.value, { autoRedirect: false })
+      consoleApi({ action: 'get', id: serverId.value })
     ])
     if (detail) server.value = detail
-    const listed = (Array.isArray(all?.data) ? all.data : all?.data?.servers || []).find(x => String(x.id) === serverId.value)
-    if (listed) latency.value = { ping: listed.ping || [], loss: listed.loss || [] }
     if (res?.status === 401) {
       loggedIn.value = false
       return
@@ -349,20 +325,6 @@ const loadText = computed(() => {
 })
 const ramGb = computed(() => Math.round((parseFloat(server.value.ram_total) || 0) / 1024))
 const shortCpu = computed(() => String(server.value.cpu_info || '').replace(/\(R\)|\(TM\)|CPU|Processor|\s+@.*$/gi, '').replace(/\s+/g, ' ').trim().slice(0, 32))
-const appConfig = inject('appConfig', {})
-const latency = ref({ ping: [], loss: [] })
-const seriesOf = (arr, key) => (Array.isArray(arr) ? arr : []).slice(-30).map(pt => {
-  const v = pt?.[key]
-  if (v === undefined || v === null || v === false || v === 'false') return null
-  const n = Number(v)
-  return Number.isFinite(n) ? n : null
-})
-const netRows = computed(() => getNets(server.value, appConfig).map(n => ({
-  ...n,
-  series: seriesOf(latency.value.ping, n.key),
-  lossSeries: seriesOf(latency.value.loss, n.key)
-})))
-const diag = computed(() => diagnose(server.value, online.value, appConfig))
 const realIp = ref({ v4: '', v6: '' })
 const cleanIp = (v) => { const x = String(v || '').trim(); return x && x !== '0' && x !== '1' ? x : '' }
 const ipText = computed(() => realIp.value.v4 || realIp.value.v6 || '')
@@ -512,26 +474,6 @@ onUnmounted(() => {
 .w-note { width: 170px !important; flex: none; }
 
 
-.net-box { background: var(--bg-card); border: 1px solid var(--border-color); border-left: 3px solid var(--border-active); border-radius: 14px; padding: 16px 20px; margin-bottom: 14px; }
-.net-box.lv-ok { border-left-color: var(--accent-green); }
-.net-box.lv-info { border-left-color: var(--accent-blue); }
-.net-box.lv-warn { border-left-color: var(--accent-yellow); }
-.net-box.lv-bad { border-left-color: var(--accent-red); }
-.net-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
-.net-diag { font-size: 13px; color: var(--text-secondary); background: var(--bg-secondary); border-radius: 8px; padding: 6px 12px; }
-.net-diag b { margin-right: 8px; color: var(--text-primary); }
-.lv-ok .net-diag b { color: var(--accent-green); }
-.lv-info .net-diag b { color: var(--accent-blue); }
-.lv-warn .net-diag b { color: var(--accent-yellow); }
-.lv-bad .net-diag b { color: var(--accent-red); }
-.net-row { display: grid; grid-template-columns: 56px 80px 1fr 92px 0.6fr; gap: 12px; align-items: center; padding: 6px 0; font-size: 14px; }
-.net-name { color: var(--text-secondary); }
-.net-ping, .net-loss { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; }
-.net-loss { font-size: 13px; }
-.net-dots { display: flex; gap: 3px; min-width: 0; overflow: hidden; }
-.net-dots i { flex: 1; min-width: 3px; height: 12px; border-radius: 3px; }
-.net-dots.small i { height: 8px; }
-@media (max-width: 760px) { .net-row { grid-template-columns: 48px 70px 1fr; } .net-row .net-loss, .net-row .net-dots.small { display: none; } }
 
 @media (max-width: 1100px) {
   .res-grid { grid-template-columns: repeat(2, 1fr); }
