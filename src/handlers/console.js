@@ -402,12 +402,18 @@ ts_ip() {
 
 
 # 反代里的「域名 → 本机端口」：只从 Caddy/Nginx 配置里摘 站点地址 和 反代端口 两样，其他内容一概不读不传
+# 反代上游是否在本机：只认 localhost/回环/空主机/本机网卡 IP，指向别的机器的一律丢掉
+local_ips() {
+  { echo localhost; echo 127.0.0.1; echo ::1; echo 0.0.0.0; ip -o addr show 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }'; } | tr '\\n' ' '
+}
+
 site_scan() {
+  LIPS=" $(local_ips) "
   # Caddyfile：/etc/caddy 下所有文件（含 import 进来的子目录），兼容 Windows 换行
   find /etc/caddy -maxdepth 3 -type f 2>/dev/null | head -n 50 | while IFS= read -r f; do
     [ -r "$f" ] || continue
     case "$f" in *.json|*.crt|*.key|*.pem) continue ;; esac
-    awk '
+    awk -v lips="$LIPS" '
       { sub(/\\r$/, ""); sub(/#.*/, ""); line = $0 }
       depth == 0 && line ~ /\\{[ \\t]*$/ {
         addr = line; sub(/\\{[ \\t]*$/, "", addr); n = split(addr, a, /[ ,\\t]+/); host = ""
@@ -416,27 +422,29 @@ site_scan() {
       }
       depth >= 1 && host != "" && $1 == "reverse_proxy" {
         for (i = 2; i <= NF; i++) { u = $i; if (u ~ /^[@\\/{]/) continue; sub(/^https?:\\/\\//, "", u); sub(/\\/.*/, "", u)
-          if (match(u, /:[0-9]+$/)) { print host "\\t" substr(u, RSTART + 1); break } }
+          if (match(u, /:[0-9]+$/)) { uh = substr(u, 1, RSTART - 1); gsub(/[\\[\\]]/, "", uh)
+            if (uh == "" || uh ~ /^127\\./ || index(lips, " " uh " ")) print host "\\t" substr(u, RSTART + 1); break } }
       }
       { o = gsub(/\\{/, "{", line); c = gsub(/\\}/, "}", line); depth += o - c; if (depth <= 0) { depth = 0; if (c > 0) host = "" } }
     ' "$f"
   done
   # Caddy 管理接口（本机 2019，只读）：配置不在 /etc/caddy 时（如 Docker 里的 Caddy）也能拿到，只摘域名和上游端口
   if command -v curl >/dev/null 2>&1; then
-    curl -fsS -m 3 http://127.0.0.1:2019/config/ 2>/dev/null | head -c 2000000 | tr ',{}[]' '\\n\\n\\n\\n\\n' | awk -F '"' '
+    curl -fsS -m 3 http://127.0.0.1:2019/config/ 2>/dev/null | head -c 2000000 | tr ',{}[]' '\\n\\n\\n\\n\\n' | awk -v lips="$LIPS" -F '"' '
       $2 == "host" { want = 1; next }
       want && NF >= 2 && $2 ~ /^[A-Za-z0-9*][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/ { host = $2; next }
       { want = 0 }
-      $2 == "dial" && host != "" { u = $4; if (match(u, /:[0-9]+$/)) print host "\\t" substr(u, RSTART + 1) }
+      $2 == "dial" && host != "" { u = $4; if (match(u, /:[0-9]+$/)) { uh = substr(u, 1, RSTART - 1); gsub(/[\\[\\]]/, "", uh)
+        if (uh == "" || uh ~ /^127\\./ || index(lips, " " uh " ")) print host "\\t" substr(u, RSTART + 1) } }
     '
   fi
   for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
     [ -f "$f" ] && [ -r "$f" ] || continue
-    awk '
+    awk -v lips="$LIPS" '
       { sub(/#.*/, "") }
       $1 == "server" && $0 ~ /\\{/ { host = "" }
       $1 == "server_name" { for (i = 2; i <= NF; i++) { h = $i; sub(/;$/, "", h); if (h ~ /^[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/) { host = h; break } } }
-      host != "" { for (k = 1; k < NF; k++) if ($k == "proxy_pass") { u = $(k + 1); sub(/;.*$/, "", u); sub(/^https?:\\/\\//, "", u); sub(/\\/.*/, "", u); if (match(u, /:[0-9]+$/)) print host "\\t" substr(u, RSTART + 1) } }
+      host != "" { for (k = 1; k < NF; k++) if ($k == "proxy_pass") { u = $(k + 1); sub(/;.*$/, "", u); sub(/^https?:\\/\\//, "", u); sub(/\\/.*/, "", u); if (match(u, /:[0-9]+$/)) { uh = substr(u, 1, RSTART - 1); gsub(/[\\[\\]]/, "", uh); if (uh == "" || uh ~ /^127\\./ || index(lips, " " uh " ")) print host "\\t" substr(u, RSTART + 1) } } }
     ' "$f"
   done
 }
@@ -486,7 +494,7 @@ discover() {
 
 run_once() {
   url="$1"; id="$2"; token="$3"
-  q="id=$id&token=$token&v=5"
+  q="id=$id&token=$token&v=6"
   list=$(curl -fsS -m 15 -A cfsm-console "$url/console/report?$q") || return 0
   out=""
   tab=$(printf '\\t')

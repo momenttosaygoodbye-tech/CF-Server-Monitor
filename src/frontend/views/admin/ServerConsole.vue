@@ -157,7 +157,7 @@
               </div>
             </div>
           </details>
-          <div v-if="status._disc" class="disc-sub">网址识别：{{ (status._disc.listen || []).length ? `读到 ${status._disc.listen.length} 条监听端口` : '还没读到端口对应关系' }}，{{ (status._disc.sites || []).length }} 个反代域名{{ status._disc.tsip ? '，有 Tailscale' : '' }}{{ (status._disc.v || 1) < 5 ? '。本机脚本是旧版，重跑一次安装命令才能识别网址和反代域名' : '' }}</div>
+          <div v-if="status._disc" class="disc-sub">网址识别：{{ (status._disc.listen || []).length ? `读到 ${status._disc.listen.length} 条监听端口` : '还没读到端口对应关系' }}，{{ (status._disc.sites || []).length }} 个反代域名{{ status._disc.tsip ? '，有 Tailscale' : '' }}{{ (status._disc.v || 1) < 6 ? '。本机脚本是旧版，重跑一次安装命令才能识别网址和反代域名' : '' }}</div>
           <div v-if="discovered.dockerSeen && !discovered.hasDocker" class="disc-sub">🐳 这台装了 Docker，但还读不到容器列表：在本机重新执行一次下面的安装命令即可（只需一次）。</div>
           <div v-if="discovered.ports.length" class="disc-ports">
             <span>本机监听端口：</span>
