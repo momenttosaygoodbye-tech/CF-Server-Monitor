@@ -75,7 +75,10 @@
         </div>
 
         <div v-for="(block, bi) in profile.blocks" :key="'b' + bi" class="info-block">
-          <div class="info-title">{{ block.icon || '📌' }} {{ block.title || '未命名' }}</div>
+          <div class="info-title">
+            <span>{{ block.icon || '📌' }} {{ block.title || '未命名' }}</span>
+            <span v-if="linkedSvc(block)" class="badge" :class="badge(linkedSvc(block)).cls" :title="'关联服务：' + linkedSvc(block).name"><i></i>{{ badge(linkedSvc(block)).text }}</span>
+          </div>
           <div v-for="(row, ri) in block.rows" :key="'r' + ri" class="info-row">
             <span class="info-label">{{ row.label }}：</span>
             <span class="info-value" :class="'kind-' + row.kind">
@@ -174,7 +177,13 @@
         <div class="edit-section">
           <div class="edit-section-head">
             <h2>信息块</h2>
-            <button class="btn" @click="addBlock">＋ 加一个信息块</button>
+            <div class="edit-actions">
+              <select v-if="draft.services.length" class="form-select" value="" @change="addBlockFromSvc($event.target.value); $event.target.value = ''">
+                <option value="">从核心服务新建…</option>
+                <option v-for="svc in draft.services" :key="svc.key" :value="svc.key">{{ svc.icon }} {{ svc.name || svc.target || '未命名服务' }}</option>
+              </select>
+              <button class="btn" @click="addBlock">＋ 加一个信息块</button>
+            </div>
           </div>
           <p class="agent-tip">比如「哪吒监控面板」：管理后台（网址）、公开监控（网址）、隧穿命令（复制）、服务端口（文本）。不要填密码。</p>
           <div v-for="(block, bi) in draft.blocks" :key="'eb' + bi" class="edit-block">
@@ -183,6 +192,10 @@
                 <option v-for="ic in icons" :key="ic" :value="ic">{{ ic }}</option>
               </select>
               <input v-model="block.title" class="form-input w-title" placeholder="标题，如 哪吒监控面板 v1">
+              <select v-model="block.svc" class="form-select w-kind" title="关联后，块标题旁会显示这个服务的运行状态" @change="onLinkSvc(block)">
+                <option value="">不关联服务</option>
+                <option v-for="svc in draft.services" :key="svc.key" :value="svc.key">关联：{{ svc.icon }} {{ svc.name || svc.target || '未命名服务' }}</option>
+              </select>
               <button class="mini-btn" :disabled="bi === 0" @click="move(draft.blocks, bi, -1)">↑</button>
               <button class="mini-btn" :disabled="bi === draft.blocks.length - 1" @click="move(draft.blocks, bi, 1)">↓</button>
               <button class="mini-btn danger" @click="draft.blocks.splice(bi, 1)">删除块</button>
@@ -311,6 +324,8 @@ const normalizeProfile = (p) => ({
 
 const startEdit = () => {
   draft.value = JSON.parse(JSON.stringify(profile.value))
+  for (const svc of draft.value.services) if (!/^[a-z0-9]{4,16}$/.test(svc.key || '')) svc.key = newKey()
+  for (const b of draft.value.blocks) if (b.svc === undefined) b.svc = ''
   editing.value = true
 }
 const cancelEdit = () => { editing.value = false }
@@ -353,7 +368,7 @@ const saveProfileDirect = async (next) => {
 }
 const addDiscovered = (items) => {
   const next = JSON.parse(JSON.stringify(profile.value))
-  for (const it of items) next.services.push({ key: '', name: it.name, icon: it.icon, desc: it.desc || '', check: it.check, target: it.target })
+  for (const it of items) next.services.push({ key: newKey(), name: it.name, icon: it.icon, desc: it.desc || '', check: it.check, target: it.target })
   return saveProfileDirect(next)
 }
 const ignoreDiscovered = (item) => {
@@ -363,7 +378,20 @@ const ignoreDiscovered = (item) => {
 }
 
 const addBlock = () => draft.value.blocks.push({ title: '', icon: '📊', rows: [{ label: '管理后台', value: '', kind: 'link', note: '' }] })
-const addService = () => draft.value.services.push({ key: '', name: '', icon: '🚀', desc: '', check: 'systemd', target: '' })
+const newKey = () => Math.random().toString(36).slice(2, 10).padEnd(8, '0')
+const addService = () => draft.value.services.push({ key: newKey(), name: '', icon: '🚀', desc: '', check: 'systemd', target: '' })
+const linkedSvc = (block) => block?.svc ? profile.value.services.find(s => s.key === block.svc) || null : null
+const onLinkSvc = (block) => {
+  const svc = draft.value.services.find(s => s.key === block.svc)
+  if (!svc) return
+  if (!block.title) block.title = svc.name
+  if (!block.icon || block.icon === '📊') block.icon = svc.icon || block.icon
+}
+const addBlockFromSvc = (key) => {
+  const svc = draft.value.services.find(s => s.key === key)
+  if (!svc) return
+  draft.value.blocks.push({ title: svc.name || svc.target, icon: svc.icon || '📊', svc: svc.key, rows: [{ label: '管理后台', value: '', kind: 'link', note: '' }] })
+}
 const move = (arr, i, d) => {
   const j = i + d
   if (j < 0 || j >= arr.length) return
@@ -443,7 +471,8 @@ const badge = (svc) => {
   if (reportStale.value) return { cls: 'b-stale', text: '过期' }
   if (st === 'active') return { cls: 'b-ok', text: '运行中' }
   if (st === 'activating' || st === 'reloading') return { cls: 'b-warn', text: '启动中' }
-  return { cls: 'b-bad', text: st }
+  const zh = { inactive: '已停止', exited: '已停止', failed: '失败', created: '未启动', paused: '已暂停', restarting: '重启中', dead: '已停止', unknown: '未知' }
+  return { cls: 'b-bad', text: zh[st] || st }
 }
 
 // 安装命令
@@ -500,6 +529,8 @@ onUnmounted(() => {
 .bar-fill.purple { background: linear-gradient(90deg, var(--accent-purple), var(--accent-pink)); }
 .res-foot { display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 10px; margin-top: 8px; }
 
+.info-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.edit-actions { display: flex; gap: 8px; align-items: center; }
 .info-block { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; }
 .info-title { color: var(--accent-blue); font-weight: 700; font-size: 12px; margin-bottom: 6px; }
 .info-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 3px 0; font-size: 11px; }

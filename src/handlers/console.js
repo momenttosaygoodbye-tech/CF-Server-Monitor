@@ -75,6 +75,7 @@ export function sanitizeProfile(input) {
     blocks: blocks.map(block => ({
       title: str(block?.title, 80),
       icon: str(block?.icon, 8),
+      svc: /^[a-z0-9]{4,16}$/.test(block?.svc || '') ? block.svc : '',
       rows: (Array.isArray(block?.rows) ? block.rows.slice(0, 30) : []).map(row => ({
         label: str(row?.label, 40),
         value: str(row?.value, 1000),
