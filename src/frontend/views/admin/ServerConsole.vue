@@ -97,6 +97,12 @@
             <button class="mini-btn" @click="copy(autoUrl(block).url, bi + '-auto')">{{ copied === bi + '-auto' ? '✓ 已复制' : '复制' }}</button>
             <span class="info-note">{{ autoUrl(block).note }}</span>
           </div>
+          <div v-if="autoUrl(block) && autoUrl(block).localPort" class="info-row">
+            <span class="info-label">隧穿命令：</span>
+            <span class="info-value kind-copy"><code>{{ tunnelCmd(autoUrl(block).localPort) }}</code></span>
+            <button class="mini-btn" @click="copy(tunnelCmd(autoUrl(block).localPort), bi + '-tun')">{{ copied === bi + '-tun' ? '✓ 已复制' : '复制' }}</button>
+            <span class="info-note">{{ tunnelHint }}</span>
+          </div>
         </div>
 
         <!-- 服务状态 -->
@@ -183,6 +189,19 @@
 
       <!-- 编辑模式 -->
       <template v-else>
+        <div class="edit-section">
+          <div class="edit-section-head">
+            <h2>隧穿设置</h2>
+          </div>
+          <p class="agent-tip">只监听本机的服务会自动生成 ssh 隧穿命令。这里填你电脑上的密钥路径和登录用户，设一次就行（留空的部分命令里会留 &lt;占位&gt;）。</p>
+          <div class="edit-line">
+            <input v-model="draft.tunnel.key" class="form-input w-value" placeholder="密钥路径，如 %USERPROFILE%\.ssh\dsh-tunnel">
+            <input v-model="draft.tunnel.user" class="form-input w-label" placeholder="登录用户，如 ubuntu">
+            <input v-model="draft.tunnel.host" class="form-input w-label" :placeholder="'主机，默认 ' + (ipText || 'IP')">
+            <input v-model="draft.tunnel.port" class="form-input w-kind" placeholder="SSH 端口，默认 22">
+          </div>
+        </div>
+
         <div class="edit-section">
           <div class="edit-section-head">
             <h2>信息块</h2>
@@ -328,11 +347,36 @@ const load = async () => {
 const normalizeProfile = (p) => ({
   blocks: Array.isArray(p?.blocks) ? p.blocks.map(b => ({ ...b, rows: Array.isArray(b.rows) ? b.rows : [] })) : [],
   services: Array.isArray(p?.services) ? p.services : [],
-  ignored: Array.isArray(p?.ignored) ? p.ignored : []
+  ignored: Array.isArray(p?.ignored) ? p.ignored : [],
+  tunnel: { key: '', user: '', host: '', port: '', ...(p?.tunnel || {}) }
+})
+
+// 隧穿命令：本服务器没设过就沿用上次在别的服务器设的密钥路径和用户
+const TUN_KEY = 'cfsm-console-tunnel'
+const tunnelDefaults = () => { try { return JSON.parse(localStorage.getItem(TUN_KEY) || '{}') } catch { return {} } }
+const tunnelCfg = computed(() => {
+  const t = profile.value.tunnel || {}
+  const d = tunnelDefaults()
+  return { key: t.key || d.key || '', user: t.user || d.user || '', host: t.host || ipText.value || '', port: t.port || '' }
+})
+const tunnelCmd = (port) => {
+  const t = tunnelCfg.value
+  const key = t.key ? `-i "${t.key}" ` : ''
+  const sp = t.port && t.port !== '22' ? `-p ${t.port} ` : ''
+  return `ssh ${key}${sp}-N -L ${port}:localhost:${port} ${t.user || '<用户>'}@${t.host || '<主机>'}`
+}
+const tunnelHint = computed(() => {
+  const t = tunnelCfg.value
+  if (!t.key || !t.user) return '在「编辑档案 → 隧穿设置」里填一次密钥路径和用户'
+  return '在电脑上执行，保持窗口开着，然后打开上面的地址'
 })
 
 const startEdit = () => {
   draft.value = JSON.parse(JSON.stringify(profile.value))
+  if (!draft.value.tunnel) draft.value.tunnel = { key: '', user: '', host: '', port: '' }
+  const d = tunnelDefaults()
+  if (!draft.value.tunnel.key && d.key) draft.value.tunnel.key = d.key
+  if (!draft.value.tunnel.user && d.user) draft.value.tunnel.user = d.user
   for (const svc of draft.value.services) if (!/^[a-z0-9]{4,16}$/.test(svc.key || '')) svc.key = newKey()
   for (const b of draft.value.blocks) if (b.svc === undefined) b.svc = ''
   editing.value = true
@@ -349,6 +393,8 @@ const save = async () => {
       return
     }
     profile.value = normalizeProfile(res.data.profile)
+    const t = profile.value.tunnel
+    if (t.key || t.user) { try { localStorage.setItem(TUN_KEY, JSON.stringify({ key: t.key, user: t.user })) } catch {} }
     editing.value = false
   } finally {
     saving.value = false

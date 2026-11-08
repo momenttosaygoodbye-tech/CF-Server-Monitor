@@ -173,7 +173,7 @@ export function serviceUrl(svc, disc, serverIp) {
   }
   const best = list[0]
   const [b, p] = best
-  if (isLoop(b)) return { url: `http://localhost:${p}`, note: '只监听本机，需要 SSH 隧道' }
+  if (isLoop(b)) return { url: `http://localhost:${p}`, note: '只监听本机，先在电脑上开隧穿', localPort: p }
   if (/^100\./.test(b)) return { url: `http://${b}:${p}`, note: '自动识别 · Tailscale 内网' }
   if (isAny(b) && disc.tsip) return { url: `http://${disc.tsip}:${p}`, note: '自动识别 · Tailscale 内网' }
   const host = isAny(b) ? serverIp : b

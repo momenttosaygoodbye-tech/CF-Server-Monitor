@@ -71,6 +71,13 @@ export function sanitizeProfile(input) {
   const services = Array.isArray(src.services) ? src.services.slice(0, 60) : [];
   const ignored = Array.isArray(src.ignored) ? src.ignored.slice(0, 200) : [];
   return {
+    // 隧穿设置：密钥路径是用户电脑上的（如 %USERPROFILE%\\.ssh\\dsh-tunnel），只用来拼命令文本
+    tunnel: {
+      key: str(src.tunnel?.key, 200).replace(/["'`$;&|<>\r\n]/g, ''),
+      user: str(src.tunnel?.user, 32).replace(/[^A-Za-z0-9._-]/g, ''),
+      host: str(src.tunnel?.host, 253).replace(/[^A-Za-z0-9.:\-\[\]]/g, ''),
+      port: str(src.tunnel?.port, 5).replace(/[^0-9]/g, '')
+    },
     ignored: [...new Set(ignored.map(x => str(x, 80).replace(/[^A-Za-z0-9@._:\/+=\- ]/g, '')).filter(Boolean))],
     blocks: blocks.map(block => ({
       title: str(block?.title, 80),
