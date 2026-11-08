@@ -277,7 +277,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import TerminalHeader from '../../components/TerminalHeader.vue'
 import Footer from '../../components/Footer.vue'
@@ -285,7 +285,7 @@ import { http, isAdminLoggedIn } from '../../utils/http'
 import { fetchServerDetail, getFlagRegionCode, isServerOnline } from '../../utils/api.js'
 import { getPublicAssetUrl, getApiBases } from '../../utils/config.js'
 import { copyTextToClipboard } from '../../utils/clipboard.js'
-import { buildDiscovered, serviceUrl } from './consoleDiscover.js'
+import { buildDiscovered, serviceUrl, resolveA, siteBelongs } from './consoleDiscover.js'
 
 
 const DEFAULT_ICONS = ['🖥️', '📁', '📊', '🛡️', '🎯', '🚀', '🌐', '🔐', '🧰', '🐳', '📡', '🗄️', '🤖', '🎬', '🔧', '⚡', '📦', '🔗']
@@ -444,10 +444,10 @@ const autoUrl = (block) => {
   const svc = linkedSvc(block)
   if (!svc) return null
   if ((block.rows || []).some(r => r.kind === 'link' && r.value)) return null
-  return serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: false })
+  return serviceUrl(svc, checkedDisc.value, { serverIp: ipText.value, ts: false })
 }
 const fillUrl = (block, svc) => {
-  const r = serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: false })
+  const r = serviceUrl(svc, checkedDisc.value, { serverIp: ipText.value, ts: false })
   if (!r || !r.url.startsWith('https://')) return
   const url = r.url
   const row = (block.rows || []).find(r => r.kind === 'link' && !r.value)
@@ -507,6 +507,22 @@ const shortCpu = computed(() => String(server.value.cpu_info || '').replace(/\(R
 const realIp = ref({ v4: '', v6: '' })
 const cleanIp = (v) => { const x = String(v || '').trim(); return x && x !== '0' && x !== '1' ? x : '' }
 const ipText = computed(() => realIp.value.v4 || realIp.value.v6 || '')
+
+// 反代域名逐个查 DNS，解析到别的机器的剔除
+const foreignSites = ref(new Set())
+watch(() => [JSON.stringify(status.value?._disc?.sites || []), ipText.value], async () => {
+  const sites = status.value?._disc?.sites || []
+  const mine = [realIp.value.v4, realIp.value.v6].filter(Boolean)
+  if (!sites.length || !mine.length) { foreignSites.value = new Set(); return }
+  const bad = new Set()
+  await Promise.all([...new Set(sites.map(x => x[0]))].slice(0, 30).map(async h => { if (!siteBelongs(await resolveA(h), mine)) bad.add(h) }))
+  foreignSites.value = bad
+}, { immediate: true })
+const checkedDisc = computed(() => {
+  const d = status.value?._disc
+  if (!d || !foreignSites.value.size) return d
+  return { ...d, sites: (d.sites || []).filter(x => !foreignSites.value.has(x[0])) }
+})
 // 公开接口会把 IP 隐藏成 0/1，管理员列表接口才有真实 IP；只在打开页面时取一次
 const loadRealIp = async () => {
   const res = await http.postByIndex('/admin/api', { action: 'list' }, apiIndex.value, { autoRedirect: false })

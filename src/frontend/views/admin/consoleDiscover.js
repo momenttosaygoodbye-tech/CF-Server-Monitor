@@ -207,3 +207,30 @@ export function siteUrlFor(svc, disc, opts) {
   const r = serviceUrl(svc, disc, opts)
   return r ? r.url : ''
 }
+
+
+// ---- 域名归属核对：反代域名的 DNS 必须解析到本机，否则（比如配置里残留着别的机器的站点）不用 ----
+const CF_V4 = ['173.245.48.0/20','103.21.244.0/22','103.22.200.0/22','103.31.4.0/22','141.101.64.0/18','108.162.192.0/18','190.93.240.0/20','188.114.96.0/20','197.234.240.0/22','198.41.128.0/17','162.158.0.0/15','104.16.0.0/13','104.24.0.0/14','172.64.0.0/13','131.0.72.0/22']
+const ip2n = (ip) => String(ip).split('.').reduce((a, x) => a * 256 + (Number(x) || 0), 0)
+export function isCloudflareIp(ip) {
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(String(ip))) return false
+  const n = ip2n(ip)
+  return CF_V4.some(c => { const [b, m] = c.split('/'); const size = 2 ** (32 - Number(m)); const base = ip2n(b); return n >= base && n < base + size })
+}
+// answers: 该域名解析到的 IPv4 列表；返回 true=属于本机或无法判断，false=明确指向别的机器
+export function siteBelongs(answers, myIps) {
+  const a = (answers || []).filter(Boolean)
+  if (!a.length) return true
+  if (a.some(ip => (myIps || []).includes(ip))) return true
+  if (a.every(isCloudflareIp)) return true // 走 CF 代理，看不出源站，保留
+  return false
+}
+const dnsCache = new Map()
+export async function resolveA(host) {
+  const h = String(host).replace(/:\d+$/, '').replace(/^\*\./, '')
+  if (dnsCache.has(h)) return dnsCache.get(h)
+  const p = fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(h)}&type=A`, { headers: { accept: 'application/dns-json' } })
+    .then(r => r.json()).then(j => (j.Answer || []).filter(x => x.type === 1).map(x => x.data)).catch(() => [])
+  dnsCache.set(h, p)
+  return p
+}
