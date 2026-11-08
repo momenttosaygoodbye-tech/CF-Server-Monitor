@@ -89,6 +89,11 @@
             <button v-if="row.kind !== 'text'" class="mini-btn" @click="copy(row.value, bi + '-' + ri)">{{ copied === bi + '-' + ri ? '✓ 已复制' : '复制' }}</button>
             <span v-if="row.note" class="info-note">{{ row.note }}</span>
           </div>
+          <div v-if="autoUrl(block)" class="info-row">
+            <span class="info-label">访问地址：</span>
+            <span class="info-value kind-link"><a :href="safeHref(autoUrl(block))" target="_blank" rel="noopener noreferrer">{{ autoUrl(block) }} ↗</a></span>
+            <span class="info-note">自动识别</span>
+          </div>
         </div>
 
         <!-- 服务状态 -->
@@ -256,7 +261,7 @@ import { http, isAdminLoggedIn } from '../../utils/http'
 import { fetchServerDetail, getFlagRegionCode, isServerOnline } from '../../utils/api.js'
 import { getPublicAssetUrl, getApiBases } from '../../utils/config.js'
 import { copyTextToClipboard } from '../../utils/clipboard.js'
-import { buildDiscovered } from './consoleDiscover.js'
+import { buildDiscovered, siteUrlFor } from './consoleDiscover.js'
 
 
 const DEFAULT_ICONS = ['🖥️', '📁', '📊', '🛡️', '🎯', '🚀', '🌐', '🔐', '🧰', '🐳', '📡', '🗄️', '🤖', '🎬', '🔧', '⚡', '📦', '🔗']
@@ -381,16 +386,33 @@ const addBlock = () => draft.value.blocks.push({ title: '', icon: '📊', rows: 
 const newKey = () => Math.random().toString(36).slice(2, 10).padEnd(8, '0')
 const addService = () => draft.value.services.push({ key: newKey(), name: '', icon: '🚀', desc: '', check: 'systemd', target: '' })
 const linkedSvc = (block) => block?.svc ? profile.value.services.find(s => s.key === block.svc) || null : null
+// 关联服务的块里还没有填网址时，自动显示从反代配置认出来的网址
+const autoUrl = (block) => {
+  const svc = linkedSvc(block)
+  if (!svc) return ''
+  if ((block.rows || []).some(r => r.kind === 'link' && r.value)) return ''
+  return siteUrlFor(svc, status.value?._disc)
+}
+const fillUrl = (block, svc) => {
+  const url = siteUrlFor(svc, status.value?._disc)
+  if (!url) return
+  const row = (block.rows || []).find(r => r.kind === 'link' && !r.value)
+  if (row) { row.value = url; if (!row.label) row.label = '访问地址' }
+  else if (!(block.rows || []).some(r => r.kind === 'link' && r.value)) block.rows.unshift({ label: '访问地址', value: url, kind: 'link', note: '' })
+}
 const onLinkSvc = (block) => {
   const svc = draft.value.services.find(s => s.key === block.svc)
   if (!svc) return
+  fillUrl(block, svc)
   if (!block.title) block.title = svc.name
   if (!block.icon || block.icon === '📊') block.icon = svc.icon || block.icon
 }
 const addBlockFromSvc = (key) => {
   const svc = draft.value.services.find(s => s.key === key)
   if (!svc) return
-  draft.value.blocks.push({ title: svc.name || svc.target, icon: svc.icon || '📊', svc: svc.key, rows: [{ label: '管理后台', value: '', kind: 'link', note: '' }] })
+  const block = { title: svc.name || svc.target, icon: svc.icon || '📊', svc: svc.key, rows: [{ label: '访问地址', value: '', kind: 'link', note: '' }] }
+  fillUrl(block, svc)
+  draft.value.blocks.push(block)
 }
 const move = (arr, i, d) => {
   const j = i + d

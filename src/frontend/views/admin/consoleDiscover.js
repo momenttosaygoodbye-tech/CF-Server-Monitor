@@ -130,3 +130,22 @@ export function buildDiscovered(disc, profile) {
   const ports = (Array.isArray(disc.ports) ? disc.ports : []).filter(p => Number(p) > 0).sort((a, b) => a - b)
   return { known, unknown, ports, at: Number(disc.at) || 0, hasDocker: Array.isArray(disc.containers) && disc.containers.length > 0, dockerSeen: Array.isArray(disc.procs) && disc.procs.some(p => /^(dockerd|containerd-shim.*)$/.test(p)) }
 }
+
+// 从自动发现结果里推这个服务的访问网址：服务端口（端口检查的目标，或 Docker 容器的宿主机映射端口）
+// 对上反代配置里的「域名 → 端口」就返回 https://域名，对不上返回空
+export function siteUrlFor(svc, disc) {
+  if (!svc || !disc) return ''
+  const sites = Array.isArray(disc.sites) ? disc.sites : []
+  if (!sites.length) return ''
+  let ports = []
+  if (svc.check === 'port' && svc.target) ports = [String(svc.target)]
+  if (svc.check === 'docker' && Array.isArray(disc.containers)) {
+    const c = disc.containers.find(x => x[0] === svc.target)
+    if (c && Array.isArray(c[3])) ports = c[3].map(String)
+  }
+  for (const p of ports) {
+    const hit = sites.find(s => String(s[1]) === p)
+    if (hit) return `https://${hit[0]}`
+  }
+  return ''
+}

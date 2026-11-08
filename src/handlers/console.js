@@ -235,7 +235,7 @@ export async function handleConsoleReport(request, env) {
   if (text.length > MAX_REPORT_BYTES) return textResponse('too large\n', 413);
   const known = new Set(services.map(s => s.key));
   const result = {};
-  const disc = { at: nowSec, v: Math.min(parseInt(url.searchParams.get('v') || '1', 10) || 1, 99), units: [], procs: [], ports: [], containers: [] };
+  const disc = { at: nowSec, v: Math.min(parseInt(url.searchParams.get('v') || '1', 10) || 1, 99), units: [], procs: [], ports: [], containers: [], sites: [] };
   let sawDisc = false;
   const clean = (v, max) => str(v, max).replace(/[^A-Za-z0-9@._:\/+=\- ]/g, '');
   for (const raw of text.split('\n')) {
@@ -256,7 +256,15 @@ export async function handleConsoleReport(request, env) {
       const name = str(parts[1], 64).replace(/[^A-Za-z0-9_.\-]/g, '');
       const image = str(parts[2], 160).replace(/[^A-Za-z0-9_.\-\/:@]/g, '');
       const state = str(parts[3], 20).replace(/[^a-z]/g, '');
-      if (name) disc.containers.push([name, image, state]);
+      // 只留宿主机映射端口号，如 0.0.0.0:8000->8000/tcp → 8000
+      const hostPorts = [...new Set([...String(parts[4] || '').matchAll(/:(\d{1,5})->/g)].map(m => m[1]))].slice(0, 20);
+      if (name) disc.containers.push([name, image, state, hostPorts]);
+      continue;
+    }
+    if (parts[0] === '#site' && disc.sites.length < 100) {
+      const host = str(parts[1], 253).toLowerCase();
+      const port = str(parts[2], 5).replace(/[^0-9]/g, '');
+      if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(host) && port) disc.sites.push([host, port]);
       continue;
     }
     if (parts[0] === '#port' && disc.ports.length < 200) {
@@ -289,7 +297,8 @@ const AGENT_SCRIPT = `#!/bin/sh
 # cfsm-console agent：只读检查服务状态并上报到你的探针 Worker
 # - 不监听任何端口，不接收也不执行任何远程命令
 # - 只做四种检查：systemctl is-active / pgrep -f / 本机监听端口 / Docker 容器状态
-# - Docker：root 只执行固定的 docker ps -a（名字、镜像、状态）写到 /run，脚本本体不接触 docker.sock
+# - Docker：root 只执行固定的 docker ps -a（名字、镜像、状态、端口映射）写到 /run，脚本本体不接触 docker.sock
+# - 反代：root 只从 Caddy/Nginx 配置里摘「域名 → 端口」写到 /run，证书、密码、其他配置一概不读不传
 # - 每 10 分钟做一次自动发现：列出运行中的服务名、进程名、监听端口（不读命令行参数、配置或密码）
 # 用法：
 #   安装（systemd，root 执行）：sh agent.sh install <WORKER_URL> <SERVER_ID> <TOKEN>
@@ -332,13 +341,52 @@ CTR_FILE=/run/cfsm-console/containers
 # 脚本本身仍以 nobody 运行、不碰 docker.sock；loop 模式下当前用户能用 docker 就直接读
 containers() {
   if [ -r "$CTR_FILE" ]; then cat "$CTR_FILE"; return 0; fi
-  command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}\\t{{.Image}}\\t{{.State}}' 2>/dev/null
+  command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}\\t{{.Image}}\\t{{.State}}\\t{{.Ports}}' 2>/dev/null
+}
+
+SITE_FILE=/run/cfsm-console/sites
+
+# 反代里的「域名 → 本机端口」：只从 Caddy/Nginx 配置里摘 站点地址 和 反代端口 两样，其他内容一概不读不传
+site_scan() {
+  for f in /etc/caddy/Caddyfile /etc/caddy/*.caddy /etc/caddy/conf.d/* /etc/caddy/sites/*; do
+    [ -f "$f" ] && [ -r "$f" ] || continue
+    awk '
+      { sub(/#.*/, ""); line = $0 }
+      depth == 0 && line ~ /\\{[ \\t]*$/ {
+        addr = line; sub(/\\{[ \\t]*$/, "", addr); n = split(addr, a, /[ ,\\t]+/); host = ""
+        for (i = 1; i <= n; i++) { h = a[i]; sub(/^https?:\\/\\//, "", h); sub(/:[0-9]+$/, "", h); sub(/\\/.*/, "", h)
+          if (h ~ /^[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/) { host = h; break } }
+      }
+      depth >= 1 && host != "" && $1 == "reverse_proxy" {
+        for (i = 2; i <= NF; i++) { u = $i; if (u ~ /^[@\\/{]/) continue; sub(/^https?:\\/\\//, "", u)
+          if (match(u, /:[0-9]+$/)) { print host "\\t" substr(u, RSTART + 1); break } }
+      }
+      { o = gsub(/\\{/, "{", line); c = gsub(/\\}/, "}", line); depth += o - c; if (depth <= 0) { depth = 0; if (c > 0) host = "" } }
+    ' "$f"
+  done
+  for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
+    [ -f "$f" ] && [ -r "$f" ] || continue
+    awk '
+      { sub(/#.*/, "") }
+      $1 == "server" && $0 ~ /\\{/ { host = "" }
+      $1 == "server_name" { for (i = 2; i <= NF; i++) { h = $i; sub(/;$/, "", h); if (h ~ /^[A-Za-z0-9][A-Za-z0-9.-]*\\.[A-Za-z][A-Za-z]+$/) { host = h; break } } }
+      host != "" { for (k = 1; k < NF; k++) if ($k == "proxy_pass") { u = $(k + 1); sub(/;.*$/, "", u); sub(/^https?:\\/\\//, "", u); sub(/\\/.*/, "", u); if (match(u, /:[0-9]+$/)) print host "\\t" substr(u, RSTART + 1) } }
+    ' "$f"
+  done
+}
+
+sites() {
+  if [ -r "$SITE_FILE" ]; then cat "$SITE_FILE"; return 0; fi
+  site_scan 2>/dev/null
 }
 
 collect() {
-  command -v docker >/dev/null 2>&1 || return 0
   mkdir -p /run/cfsm-console
-  docker ps -a --format '{{.Names}}\\t{{.Image}}\\t{{.State}}' > /run/cfsm-console/containers.tmp 2>/dev/null || { rm -f /run/cfsm-console/containers.tmp; return 0; }
+  site_scan 2>/dev/null | head -n 100 > /run/cfsm-console/sites.tmp
+  chmod 644 /run/cfsm-console/sites.tmp
+  mv -f /run/cfsm-console/sites.tmp "$SITE_FILE"
+  command -v docker >/dev/null 2>&1 || return 0
+  docker ps -a --format '{{.Names}}\\t{{.Image}}\\t{{.State}}\\t{{.Ports}}' > /run/cfsm-console/containers.tmp 2>/dev/null || { rm -f /run/cfsm-console/containers.tmp; return 0; }
   chmod 644 /run/cfsm-console/containers.tmp
   mv -f /run/cfsm-console/containers.tmp "$CTR_FILE"
 }
@@ -350,7 +398,8 @@ discover() {
     systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | head -n 200 |
       awk '{u=$1; $1=$2=$3=$4=""; sub(/^ +/, ""); printf "#unit\\t%s\\t%s\\n", u, $0}'
   fi
-  containers | head -n 200 | awk -F '\\t' 'NF>=3{printf "#ctr\\t%s\\t%s\\t%s\\n", $1, $2, $3}'
+  containers | head -n 200 | awk -F '\\t' 'NF>=3{printf "#ctr\\t%s\\t%s\\t%s\\t%s\\n", $1, $2, $3, $4}'
+  sites | head -n 100 | awk -F '\\t' 'NF>=2{printf "#site\\t%s\\t%s\\n", $1, $2}'
   ps -eo ppid=,comm= 2>/dev/null | awk '$1 != 0 && $1 != 2 {print $2}' | sort -u | head -n 300 | awk '{printf "#proc\\t%s\\n", $1}'
   if command -v ss >/dev/null 2>&1; then
     ss -ltnH 2>/dev/null | awk '{print $4}'
@@ -365,7 +414,7 @@ discover() {
 
 run_once() {
   url="$1"; id="$2"; token="$3"
-  q="id=$id&token=$token&v=2"
+  q="id=$id&token=$token&v=3"
   list=$(curl -fsS -m 15 -A cfsm-console "$url/console/report?$q") || return 0
   out=""
   tab=$(printf '\\t')
