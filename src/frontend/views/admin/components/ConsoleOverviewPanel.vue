@@ -165,10 +165,10 @@ onUnmounted(stop)
 <style scoped>
 .ov-summary { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; margin: 6px 0 16px; }
 .ov-stat { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 10px 18px; display: flex; flex-direction: column; min-width: 96px; }
-.ov-stat b { font-size: 22px; color: var(--text-primary); }
-.ov-stat span { font-size: 12px; color: var(--text-secondary); }
+.ov-stat b { font-size: 16px; color: var(--text-primary); }
+.ov-stat span { font-size: 11px; color: var(--text-secondary); }
 .ov-tools { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-.ov-time { font-size: 12px; color: var(--text-secondary); }
+.ov-time { font-size: 11px; color: var(--text-secondary); }
 .ov-error { border: 1px solid var(--accent-red); color: var(--accent-red); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
 .c-ok { color: var(--accent-green) !important; }
 .c-bad { color: var(--accent-red) !important; }
@@ -183,29 +183,29 @@ onUnmounted(stop)
 .ov-card.lv-bad { border-left-color: var(--accent-red); }
 .ov-head { display: flex; align-items: center; gap: 8px; }
 .ov-flag { width: 22px; height: 15px; border-radius: 2px; }
-.ov-name { font-weight: 700; font-size: 15px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ov-online { font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.ov-name { font-weight: 700; font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-online { font-size: 11px; display: inline-flex; align-items: center; gap: 5px; }
 .ov-online i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .ov-online.on { color: var(--accent-green); }
 .ov-online.off { color: var(--accent-red); }
-.ov-ip { font-size: 12px; color: var(--text-secondary); font-family: ui-monospace, Menlo, Consolas, monospace; margin-top: -6px; }
+.ov-ip { font-size: 11px; color: var(--text-secondary); font-family: ui-monospace, Menlo, Consolas, monospace; margin-top: -6px; }
 .ov-res { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .ov-res-top { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
 .ov-bar { height: 5px; background: var(--bg-hover); border-radius: 99px; overflow: hidden; }
 .ov-bar div { height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue)); border-radius: 99px; }
 .ov-nets { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--border-color); padding-top: 8px; }
-.ov-net { display: grid; grid-template-columns: 48px 1fr auto; font-size: 13px; align-items: baseline; }
-.ov-net.muted { display: block; color: var(--text-secondary); font-size: 12px; }
+.ov-net { display: grid; grid-template-columns: 48px 1fr auto; font-size: 12px; align-items: baseline; }
+.ov-net.muted { display: block; color: var(--text-secondary); font-size: 11px; }
 .ov-net-name { color: var(--text-secondary); }
 .ov-net-ping { font-weight: 700; font-family: ui-monospace, Menlo, Consolas, monospace; }
-.ov-net-loss { font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
-.ov-diag { font-size: 12px; line-height: 1.5; background: var(--bg-secondary); border-radius: 8px; padding: 7px 10px; color: var(--text-secondary); }
+.ov-net-loss { font-size: 11px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.ov-diag { font-size: 11px; line-height: 1.5; background: var(--bg-secondary); border-radius: 8px; padding: 7px 10px; color: var(--text-secondary); }
 .ov-diag b { color: var(--text-primary); margin-right: 6px; }
 .lv-ok .ov-diag b { color: var(--accent-green); }
 .lv-info .ov-diag b { color: var(--accent-blue); }
 .lv-warn .ov-diag b { color: var(--accent-yellow); }
 .lv-bad .ov-diag b { color: var(--accent-red); }
-.ov-svc { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
+.ov-svc { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; }
 .ov-svc-count { font-weight: 600; }
 .ov-svc-bad { color: var(--accent-red); border: 1px solid var(--accent-red); border-radius: 99px; padding: 0 8px; }
 .ov-svc-stale { color: var(--accent-yellow); }
