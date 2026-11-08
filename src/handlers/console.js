@@ -124,10 +124,39 @@ export async function handleConsoleAPI(request, env, sys) {
   } catch (_) {
     return createBadRequestResponse('invalidJson');
   }
+  await ensureTables(env.DB);
+
+  // 总览：所有服务器的服务状态汇总（不返回档案里的命令和网址）
+  if (body?.action === 'overview') {
+    const [profiles, statuses] = await Promise.all([
+      env.DB.prepare('SELECT server_id, data FROM console_profiles').all(),
+      env.DB.prepare('SELECT server_id, data, reported_at FROM console_status').all()
+    ]);
+    const statusMap = {};
+    for (const row of statuses.results || []) {
+      try { statusMap[row.server_id] = { data: JSON.parse(row.data), reported_at: row.reported_at }; } catch (_) {}
+    }
+    const result = {};
+    for (const row of profiles.results || []) {
+      let profile;
+      try { profile = JSON.parse(row.data); } catch (_) { continue; }
+      const st = statusMap[row.server_id] || { data: {}, reported_at: 0 };
+      result[row.server_id] = {
+        reported_at: st.reported_at,
+        blocks: (profile.blocks || []).length,
+        services: (profile.services || []).map(s => ({
+          name: s.name,
+          icon: s.icon,
+          check: s.check,
+          state: s.check && s.check !== 'none' ? (st.data?.[s.key] || null) : 'none'
+        }))
+      };
+    }
+    return createSuccessResponse({ servers: result, now: Math.floor(Date.now() / 1000) });
+  }
+
   const id = str(body?.id, 64);
   if (!id) return createBadRequestResponse('Missing ID');
-
-  await ensureTables(env.DB);
   if (!await serverExists(env.DB, id)) return createNotFoundResponse('Server not found');
 
   if (body.action === 'get') {

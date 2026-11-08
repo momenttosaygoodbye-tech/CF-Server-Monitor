@@ -102,6 +102,11 @@
             :class="{ active: activeTab === 'donation' }"
             @click="activeTab = 'donation'"
           >{{ trans.donation }}</button>
+          <button
+            class="tab-btn"
+            :class="{ active: activeTab === 'console' }"
+            @click="activeTab = 'console'"
+          >监控控制台</button>
         </div>
 
         <ServerTable
@@ -181,6 +186,12 @@
         <DonationPanel
           :trans="trans"
           :active-tab="activeTab"
+        />
+
+        <!-- 二开：监控控制台总览 -->
+        <ConsoleOverviewPanel
+          :active-tab="activeTab"
+          :selected-api-index="selectedApiIndex"
         />
       </div>
 
@@ -606,6 +617,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import DatabasePanel from './components/DatabasePanel.vue'
 import ThemeStorePanel from './components/ThemeStorePanel.vue'
 import DonationPanel from './components/DonationPanel.vue'
+import ConsoleOverviewPanel from './components/ConsoleOverviewPanel.vue' // 二开
 import EditServerModal from './components/EditServerModal.vue'
 import BatchEditServersModal from './components/BatchEditServersModal.vue'
 import DeleteServerModal from './components/DeleteServerModal.vue'
