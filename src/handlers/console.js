@@ -76,7 +76,8 @@ export function sanitizeProfile(input) {
       key: str(src.tunnel?.key, 200).replace(/["'`$;&|<>\r\n]/g, ''),
       user: str(src.tunnel?.user, 32).replace(/[^A-Za-z0-9._-]/g, ''),
       host: str(src.tunnel?.host, 253).replace(/[^A-Za-z0-9.:\-\[\]]/g, ''),
-      port: str(src.tunnel?.port, 5).replace(/[^0-9]/g, '')
+      port: str(src.tunnel?.port, 5).replace(/[^0-9]/g, ''),
+      ts: src.tunnel?.ts === true
     },
     ignored: [...new Set(ignored.map(x => str(x, 80).replace(/[^A-Za-z0-9@._:\/+=\- ]/g, '')).filter(Boolean))],
     blocks: blocks.map(block => ({
@@ -101,7 +102,9 @@ export function sanitizeProfile(input) {
         icon: str(svc?.icon, 8),
         desc: str(svc?.desc, 160),
         check,
-        target: check === 'port' ? target.replace(/[^0-9]/g, '').slice(0, 5) : target
+        target: check === 'port' ? target.replace(/[^0-9]/g, '').slice(0, 5) : target,
+        // 可选：手动指定访问端口（服务有多个端口时用）
+        port: str(svc?.port, 5).replace(/[^0-9]/g, '')
       };
     })
   };

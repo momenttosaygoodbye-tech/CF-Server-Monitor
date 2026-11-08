@@ -138,8 +138,16 @@ const isLoop = (b) => /^(127\.|::1$|localhost$)/.test(String(b || ''))
 const isAny = (b) => ['0.0.0.0', '::', '*', ''].includes(String(b || ''))
 const NOISE_PORTS = new Set(['22', '53', '25', '111', '631'])
 
-export function serviceUrl(svc, disc, serverIp) {
+// 多端口服务的网页后台端口（API 口不算）
+const WEB_PORT_HINTS = [
+  [/magpie/i, '8000'],
+  [/sillytavern|tavern/i, '8000'],
+]
+
+// opts: { serverIp, ts }，ts=用户电脑能连 Tailscale
+export function serviceUrl(svc, disc, opts = {}) {
   if (!svc || !disc) return null
+  const o = typeof opts === 'string' ? { serverIp: opts } : (opts || {})
   const sites = Array.isArray(disc.sites) ? disc.sites : []
   const listen = Array.isArray(disc.listen) ? disc.listen : []
   const target = String(svc.target || '').toLowerCase()
@@ -149,39 +157,51 @@ export function serviceUrl(svc, disc, serverIp) {
     cands = hits.length ? hits.map(l => [l[0], l[1], 0]) : [['0.0.0.0', target, 0]]
   } else if (svc.check === 'docker' && Array.isArray(disc.containers)) {
     const c = disc.containers.find(x => String(x[0]).toLowerCase() === target)
-    if (c && Array.isArray(c[3])) cands = c[3].map(x => { const [b, p] = String(x).includes('|') ? String(x).split('|') : ['0.0.0.0', String(x)]; return [b, p, 0] })
+    if (c && Array.isArray(c[3])) cands = c[3].map(x => { const [b, p] = String(x).includes('|') ? String(x).split('|') : ['0.0.0.0', String(x)]; return [b, p, 1] })
   } else if ((svc.check === 'systemd' || svc.check === 'process') && target) {
     const t = target.replace(/\.service$/, '')
     for (const [b, p, proc, unit] of listen) {
       const pr = String(proc || '').toLowerCase(), un = String(unit || '').toLowerCase()
-      if (svc.check === 'systemd' && un === t) cands.push([b, p, pr && (t.includes(pr) || pr.includes(t)) ? 0 : 1])
-      else if (pr && (pr === t || (t.length >= 3 && (pr.includes(t) || t.includes(pr))))) cands.push([b, p, 0])
+      if (svc.check === 'systemd' && un === t) cands.push([b, p, pr && (t.includes(pr) || pr.includes(t)) ? 1 : 2])
+      else if (pr && (pr === t || (t.length >= 3 && (pr.includes(t) || t.includes(pr))))) cands.push([b, p, 1])
     }
   }
+  // 手动指定的访问端口优先；其次已知的网页后台端口
+  const want = String(svc.port || '') || (WEB_PORT_HINTS.find(([re]) => re.test(target) || re.test(String(svc.name || ''))) || [])[1] || ''
+  if (svc.port && !cands.some(c => c[1] === want)) {
+    const hits = listen.filter(l => l[1] === want)
+    cands.push(...(hits.length ? hits.map(l => [l[0], l[1], 0]) : [['127.0.0.1', want, 0]]))
+  }
   cands = cands.filter(c => c[1] && !NOISE_PORTS.has(String(c[1])))
+  for (const c of cands) if (want && c[1] === want) c[2] = 0
   if (!cands.length) return null
-  // 去重同端口（IPv4/IPv6 各一条），按：进程名匹配 → 非本机监听 → 端口小
+  // 用户电脑连不上 Tailscale 时，只监听 Tailscale IP 的端口和只听本机的一样，都要走隧穿
+  const tsOnly = (b) => /^100\./.test(String(b || ''))
+  const needTunnel = (b) => isLoop(b) || (!o.ts && tsOnly(b))
   const byPort = new Map()
   for (const c of cands) {
     const old = byPort.get(c[1])
-    if (!old || (isLoop(old[0]) && !isLoop(c[0])) || c[2] < old[2]) byPort.set(c[1], c)
+    if (!old || (needTunnel(old[0]) && !needTunnel(c[0])) || c[2] < old[2]) byPort.set(c[1], c)
   }
-  const list = [...byPort.values()].sort((a, b) => a[2] - b[2] || (isLoop(a[0]) - isLoop(b[0])) || Number(a[1]) - Number(b[1]))
+  const list = [...byPort.values()].sort((a, b) => a[2] - b[2] || Number(a[1]) - Number(b[1]))
   for (const c of list) {
     const hit = sites.find(s => String(s[1]) === String(c[1]))
-    if (hit) return { url: `https://${hit[0]}`, note: '自动识别 · 反代域名' }
+    if (hit && (!want || c[1] === want)) return { url: `https://${hit[0]}`, note: '自动识别 · 反代域名', port: c[1] }
   }
-  const best = list[0]
-  const [b, p] = best
-  if (isLoop(b)) return { url: `http://localhost:${p}`, note: '只监听本机，先在电脑上开隧穿', localPort: p }
-  if (/^100\./.test(b)) return { url: `http://${b}:${p}`, note: '自动识别 · Tailscale 内网' }
-  if (isAny(b) && disc.tsip) return { url: `http://${disc.tsip}:${p}`, note: '自动识别 · Tailscale 内网' }
-  const host = isAny(b) ? serverIp : b
+  const [b, p] = list[0]
+  if (isLoop(b)) return { url: `http://localhost:${p}`, note: '只监听本机，先在电脑上开隧穿', localPort: p, remote: 'localhost', port: p }
+  if (tsOnly(b)) {
+    if (o.ts) return { url: `http://${b}:${p}`, note: '自动识别 · Tailscale 内网', port: p }
+    return { url: `http://localhost:${p}`, note: '只监听 Tailscale 内网，先在电脑上开隧穿', localPort: p, remote: b, port: p }
+  }
+  if (isAny(b) && disc.tsip && o.ts) return { url: `http://${disc.tsip}:${p}`, note: '自动识别 · Tailscale 内网', port: p }
+  const host = isAny(b) ? o.serverIp : b
   if (!host) return null
-  return { url: `http://${host.includes(':') ? `[${host}]` : host}:${p}`, note: '自动识别 · 直连端口' }
+  // 直连端口可能被防火墙挡，也给一条隧穿命令备用
+  return { url: `http://${host.includes(':') ? `[${host}]` : host}:${p}`, note: '直连端口（打不开就用下面的隧穿）', localPort: p, remote: 'localhost', port: p }
 }
 
-export function siteUrlFor(svc, disc, serverIp) {
-  const r = serviceUrl(svc, disc, serverIp)
+export function siteUrlFor(svc, disc, opts) {
+  const r = serviceUrl(svc, disc, opts)
   return r ? r.url : ''
 }

@@ -99,8 +99,8 @@
           </div>
           <div v-if="autoUrl(block) && autoUrl(block).localPort" class="info-row">
             <span class="info-label">隧穿命令：</span>
-            <span class="info-value kind-copy"><code>{{ tunnelCmd(autoUrl(block).localPort) }}</code></span>
-            <button class="mini-btn" @click="copy(tunnelCmd(autoUrl(block).localPort), bi + '-tun')">{{ copied === bi + '-tun' ? '✓ 已复制' : '复制' }}</button>
+            <span class="info-value kind-copy"><code>{{ tunnelCmd(autoUrl(block)) }}</code></span>
+            <button class="mini-btn" @click="copy(tunnelCmd(autoUrl(block)), bi + '-tun')">{{ copied === bi + '-tun' ? '✓ 已复制' : '复制' }}</button>
             <span class="info-note">{{ tunnelHint }}</span>
           </div>
         </div>
@@ -200,6 +200,7 @@
             <input v-model="draft.tunnel.host" class="form-input w-label" :placeholder="'主机，默认 ' + (ipText || 'IP')">
             <input v-model="draft.tunnel.port" class="form-input w-kind" placeholder="SSH 端口，默认 22">
           </div>
+          <label class="agent-tip"><input v-model="draft.tunnel.ts" type="checkbox"> 我的电脑装了 Tailscale（勾上才会直接给 100.x 内网地址）</label>
         </div>
 
         <div class="edit-section">
@@ -263,6 +264,7 @@
               <option value="none">不检查</option>
             </select>
             <input v-model="svc.target" class="form-input w-note" :disabled="svc.check === 'none'" :placeholder="svc.check === 'port' ? '8050' : svc.check === 'process' ? 'xray' : svc.check === 'docker' ? '容器名，如 sillytavern' : 'sing-box'">
+            <input v-model="svc.port" class="form-input w-port" placeholder="访问端口" title="服务有多个端口时，填网页后台的端口；留空自动选">
             <button class="mini-btn" :disabled="si === 0" @click="move(draft.services, si, -1)">↑</button>
             <button class="mini-btn" :disabled="si === draft.services.length - 1" @click="move(draft.services, si, 1)">↓</button>
             <button class="mini-btn danger" @click="draft.services.splice(si, 1)">✕</button>
@@ -348,7 +350,7 @@ const normalizeProfile = (p) => ({
   blocks: Array.isArray(p?.blocks) ? p.blocks.map(b => ({ ...b, rows: Array.isArray(b.rows) ? b.rows : [] })) : [],
   services: Array.isArray(p?.services) ? p.services : [],
   ignored: Array.isArray(p?.ignored) ? p.ignored : [],
-  tunnel: { key: '', user: '', host: '', port: '', ...(p?.tunnel || {}) }
+  tunnel: { key: '', user: '', host: '', port: '', ts: false, ...(p?.tunnel || {}) }
 })
 
 // 隧穿命令：本服务器没设过就沿用上次在别的服务器设的密钥路径和用户
@@ -359,11 +361,13 @@ const tunnelCfg = computed(() => {
   const d = tunnelDefaults()
   return { key: t.key || d.key || '', user: t.user || d.user || '', host: t.host || ipText.value || '', port: t.port || '' }
 })
-const tunnelCmd = (port) => {
+const tunnelCmd = (r) => {
   const t = tunnelCfg.value
   const key = t.key ? `-i "${t.key}" ` : ''
   const sp = t.port && t.port !== '22' ? `-p ${t.port} ` : ''
-  return `ssh ${key}${sp}-N -L ${port}:localhost:${port} ${t.user || '<用户>'}@${t.host || '<主机>'}`
+  const port = r.localPort
+  // 心跳：每 60 秒一次，连续 3 次没回应才断，防止闲置被掐
+  return `ssh ${key}${sp}-o ServerAliveInterval=60 -o ServerAliveCountMax=3 -N -L ${port}:${r.remote || 'localhost'}:${port} ${t.user || '<用户>'}@${t.host || '<主机>'}`
 }
 const tunnelHint = computed(() => {
   const t = tunnelCfg.value
@@ -373,7 +377,7 @@ const tunnelHint = computed(() => {
 
 const startEdit = () => {
   draft.value = JSON.parse(JSON.stringify(profile.value))
-  if (!draft.value.tunnel) draft.value.tunnel = { key: '', user: '', host: '', port: '' }
+  if (!draft.value.tunnel) draft.value.tunnel = { key: '', user: '', host: '', port: '', ts: false }
   const d = tunnelDefaults()
   if (!draft.value.tunnel.key && d.key) draft.value.tunnel.key = d.key
   if (!draft.value.tunnel.user && d.user) draft.value.tunnel.user = d.user
@@ -441,10 +445,10 @@ const autoUrl = (block) => {
   const svc = linkedSvc(block)
   if (!svc) return null
   if ((block.rows || []).some(r => r.kind === 'link' && r.value)) return null
-  return serviceUrl(svc, status.value?._disc, ipText.value)
+  return serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: !!profile.value.tunnel?.ts })
 }
 const fillUrl = (block, svc) => {
-  const r = serviceUrl(svc, status.value?._disc, ipText.value)
+  const r = serviceUrl(svc, status.value?._disc, { serverIp: ipText.value, ts: !!profile.value.tunnel?.ts })
   if (!r || !r.url.startsWith('https://')) return
   const url = r.url
   const row = (block.rows || []).find(r => r.kind === 'link' && !r.value)
@@ -602,6 +606,7 @@ onUnmounted(() => {
 .bar-fill.purple { background: linear-gradient(90deg, var(--accent-purple), var(--accent-pink)); }
 .res-foot { display: flex; justify-content: space-between; color: var(--text-secondary); font-size: 10px; margin-top: 8px; }
 
+.w-port { width: 76px; flex: none; }
 .info-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .edit-actions { display: flex; gap: 8px; align-items: center; }
 .info-block { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; }
