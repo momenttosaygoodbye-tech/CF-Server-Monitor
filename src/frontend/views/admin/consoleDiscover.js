@@ -141,7 +141,6 @@ const NOISE_PORTS = new Set(['22', '53', '25', '111', '631'])
 // 多端口服务的网页后台端口（API 口不算）
 const WEB_PORT_HINTS = [
   [/magpie/i, '8000'],
-  [/sillytavern|tavern/i, '8000'],
 ]
 
 // opts: { serverIp, ts }，ts=用户电脑能连 Tailscale
@@ -184,9 +183,11 @@ export function serviceUrl(svc, disc, opts = {}) {
     if (!old || (needTunnel(old[0]) && !needTunnel(c[0])) || c[2] < old[2]) byPort.set(c[1], c)
   }
   const list = [...byPort.values()].sort((a, b) => a[2] - b[2] || Number(a[1]) - Number(b[1]))
-  for (const c of list) {
-    const hit = sites.find(s => String(s[1]) === String(c[1]))
-    if (hit && (!want || c[1] === want)) return { url: `https://${hit[0]}`, note: '自动识别 · 反代域名', port: c[1] }
+  // 有反代域名的端口最优先（手动指定的端口有域名时先用它）
+  const withSite = list.map(c => [c, sites.find(s => String(s[1]) === String(c[1]))]).filter(x => x[1])
+  if (withSite.length && !(svc.port && !withSite.some(x => x[0][1] === svc.port))) {
+    const [c, hit] = withSite.find(x => x[0][1] === want) || withSite[0]
+    return { url: `https://${String(hit[0]).replace(/^\*\./, '')}`, note: '自动识别 · 反代域名', port: c[1] }
   }
   const [b, p] = list[0]
   if (isLoop(b)) return { url: `http://localhost:${p}`, note: '只监听本机，先在电脑上开隧穿', localPort: p, remote: 'localhost', port: p }
