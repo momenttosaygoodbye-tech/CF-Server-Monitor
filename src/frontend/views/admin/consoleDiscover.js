@@ -147,7 +147,8 @@ const WEB_PORT_HINTS = [
 export function serviceUrl(svc, disc, opts = {}) {
   if (!svc || !disc) return null
   const o = typeof opts === 'string' ? { serverIp: opts } : (opts || {})
-  const sites = Array.isArray(disc.sites) ? disc.sites : []
+  // v6 以前的脚本不区分上游在不在本机，会把反代到别的机器的域名也算进来，旧数据一律不用
+  const sites = Array.isArray(disc.sites) && (disc.v || 1) >= 6 ? disc.sites : []
   const listen = Array.isArray(disc.listen) ? disc.listen : []
   const target = String(svc.target || '').toLowerCase()
   let cands = [] // [bind, port, score]
