@@ -235,7 +235,7 @@ export async function handleConsoleReport(request, env) {
   if (text.length > MAX_REPORT_BYTES) return textResponse('too large\n', 413);
   const known = new Set(services.map(s => s.key));
   const result = {};
-  const disc = { at: nowSec, v: Math.min(parseInt(url.searchParams.get('v') || '1', 10) || 1, 99), units: [], procs: [], ports: [], containers: [], sites: [] };
+  const disc = { at: nowSec, v: Math.min(parseInt(url.searchParams.get('v') || '1', 10) || 1, 99), units: [], procs: [], ports: [], containers: [], sites: [], listen: [], tsip: '' };
   let sawDisc = false;
   const clean = (v, max) => str(v, max).replace(/[^A-Za-z0-9@._:\/+=\- ]/g, '');
   for (const raw of text.split('\n')) {
@@ -257,8 +257,21 @@ export async function handleConsoleReport(request, env) {
       const image = str(parts[2], 160).replace(/[^A-Za-z0-9_.\-\/:@]/g, '');
       const state = str(parts[3], 20).replace(/[^a-z]/g, '');
       // 只留宿主机映射端口号，如 0.0.0.0:8000->8000/tcp → 8000
-      const hostPorts = [...new Set([...String(parts[4] || '').matchAll(/:(\d{1,5})->/g)].map(m => m[1]))].slice(0, 20);
+      const hostPorts = [...new Set([...String(parts[4] || '').matchAll(/(?:^|[ ,])\[?([0-9a-fA-F.:]*?)\]?:(\d{1,5})->/g)].map(m => `${m[1] || '0.0.0.0'}|${m[2]}`))].slice(0, 20);
       if (name) disc.containers.push([name, image, state, hostPorts]);
+      continue;
+    }
+    if (parts[0] === '#lsn' && disc.listen.length < 300) {
+      const bind = str(parts[1], 46).replace(/[^0-9a-fA-F.:*]/g, '');
+      const port = str(parts[2], 5).replace(/[^0-9]/g, '');
+      const proc = str(parts[3], 40).replace(/[^A-Za-z0-9@._:+\-]/g, '');
+      const unit = str(parts[4], 80).replace(/[^A-Za-z0-9@._:+\-]/g, '');
+      if (port) disc.listen.push([bind, port, proc === '-' ? '' : proc, unit === '-' ? '' : unit]);
+      continue;
+    }
+    if (parts[0] === '#addr' && parts[1] === 'ts') {
+      const ip = str(parts[2], 15);
+      if (/^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) disc.tsip = ip;
       continue;
     }
     if (parts[0] === '#site' && disc.sites.length < 100) {
@@ -298,6 +311,7 @@ const AGENT_SCRIPT = `#!/bin/sh
 # - 不监听任何端口，不接收也不执行任何远程命令
 # - 只做四种检查：systemctl is-active / pgrep -f / 本机监听端口 / Docker 容器状态
 # - Docker：root 只执行固定的 docker ps -a（名字、镜像、状态、端口映射）写到 /run，脚本本体不接触 docker.sock
+# - 监听端口：root 用 ss -ltnp 把端口对应到进程名和 systemd 服务名（不读命令行）
 # - 反代：root 只从 Caddy/Nginx 配置里摘「域名 → 端口」写到 /run，证书、密码、其他配置一概不读不传
 # - 每 10 分钟做一次自动发现：列出运行中的服务名、进程名、监听端口（不读命令行参数、配置或密码）
 # 用法：
@@ -345,6 +359,37 @@ containers() {
 }
 
 SITE_FILE=/run/cfsm-console/sites
+LSN_FILE=/run/cfsm-console/listen
+
+# 监听端口 → 进程名 → 所属 systemd 服务（只有 root 能看到别的用户的进程，所以放在 collect 里跑）
+listen_scan() {
+  command -v ss >/dev/null 2>&1 || return 0
+  tab=$(printf '\\t')
+  ss -ltnpH 2>/dev/null | awk '{
+    loc = $4; p = loc; sub(/.*:/, "", p); b = loc; sub(/:[0-9]+$/, "", b); gsub(/[][]/, "", b); sub(/%.*/, "", b)
+    name = "-"; pid = "-"
+    if (match($0, /\\(\\("[^"]+",pid=[0-9]+/)) { s = substr($0, RSTART + 3, RLENGTH - 3); name = s; sub(/".*/, "", name); pid = s; sub(/.*pid=/, "", pid) }
+    if (p ~ /^[0-9]+$/) print b "\\t" p "\\t" name "\\t" pid
+  }' | while IFS="$tab" read -r b p name pid; do
+    unit="-"
+    if [ "$pid" != "-" ] && [ -r "/proc/$pid/cgroup" ]; then
+      u=$(grep -o '[A-Za-z0-9@._-]*\\.service' "/proc/$pid/cgroup" 2>/dev/null | tail -n 1)
+      [ -n "$u" ] && unit=\${u%.service}
+    fi
+    printf '%s\\t%s\\t%s\\t%s\\n' "$b" "$p" "$name" "$unit"
+  done | sort -u
+}
+
+listens() {
+  if [ -r "$LSN_FILE" ]; then cat "$LSN_FILE"; return 0; fi
+  listen_scan 2>/dev/null
+}
+
+ts_ip() {
+  command -v ip >/dev/null 2>&1 || return 0
+  ip -4 -o addr show tailscale0 2>/dev/null | awk '{ split($4, a, "/"); print a[1]; exit }'
+}
+
 
 # 反代里的「域名 → 本机端口」：只从 Caddy/Nginx 配置里摘 站点地址 和 反代端口 两样，其他内容一概不读不传
 site_scan() {
@@ -385,6 +430,9 @@ collect() {
   site_scan 2>/dev/null | head -n 100 > /run/cfsm-console/sites.tmp
   chmod 644 /run/cfsm-console/sites.tmp
   mv -f /run/cfsm-console/sites.tmp "$SITE_FILE"
+  listen_scan 2>/dev/null | head -n 300 > /run/cfsm-console/listen.tmp
+  chmod 644 /run/cfsm-console/listen.tmp
+  mv -f /run/cfsm-console/listen.tmp "$LSN_FILE"
   command -v docker >/dev/null 2>&1 || return 0
   docker ps -a --format '{{.Names}}\\t{{.Image}}\\t{{.State}}\\t{{.Ports}}' > /run/cfsm-console/containers.tmp 2>/dev/null || { rm -f /run/cfsm-console/containers.tmp; return 0; }
   chmod 644 /run/cfsm-console/containers.tmp
@@ -400,6 +448,9 @@ discover() {
   fi
   containers | head -n 200 | awk -F '\\t' 'NF>=3{printf "#ctr\\t%s\\t%s\\t%s\\t%s\\n", $1, $2, $3, $4}'
   sites | head -n 100 | awk -F '\\t' 'NF>=2{printf "#site\\t%s\\t%s\\n", $1, $2}'
+  listens | head -n 300 | awk -F '\\t' 'NF>=4{printf "#lsn\\t%s\\t%s\\t%s\\t%s\\n", $1, $2, $3, $4}'
+  t=$(ts_ip)
+  if [ -n "$t" ]; then printf '#addr\\tts\\t%s\\n' "$t"; fi
   ps -eo ppid=,comm= 2>/dev/null | awk '$1 != 0 && $1 != 2 {print $2}' | sort -u | head -n 300 | awk '{printf "#proc\\t%s\\n", $1}'
   if command -v ss >/dev/null 2>&1; then
     ss -ltnH 2>/dev/null | awk '{print $4}'
@@ -414,7 +465,7 @@ discover() {
 
 run_once() {
   url="$1"; id="$2"; token="$3"
-  q="id=$id&token=$token&v=3"
+  q="id=$id&token=$token&v=4"
   list=$(curl -fsS -m 15 -A cfsm-console "$url/console/report?$q") || return 0
   out=""
   tab=$(printf '\\t')

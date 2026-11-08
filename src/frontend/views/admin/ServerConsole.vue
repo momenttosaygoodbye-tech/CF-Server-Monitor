@@ -79,7 +79,8 @@
             <span>{{ block.icon || '📌' }} {{ block.title || '未命名' }}</span>
             <span v-if="linkedSvc(block)" class="badge" :class="badge(linkedSvc(block)).cls" :title="'关联服务：' + linkedSvc(block).name"><i></i>{{ badge(linkedSvc(block)).text }}</span>
           </div>
-          <div v-for="(row, ri) in block.rows" :key="'r' + ri" class="info-row">
+          <template v-for="(row, ri) in block.rows" :key="'r' + ri">
+          <div v-if="row.value" class="info-row">
             <span class="info-label">{{ row.label }}：</span>
             <span class="info-value" :class="'kind-' + row.kind">
               <a v-if="row.kind === 'link'" :href="safeHref(row.value)" target="_blank" rel="noopener noreferrer">{{ row.value }} ↗</a>
@@ -89,10 +90,12 @@
             <button v-if="row.kind !== 'text'" class="mini-btn" @click="copy(row.value, bi + '-' + ri)">{{ copied === bi + '-' + ri ? '✓ 已复制' : '复制' }}</button>
             <span v-if="row.note" class="info-note">{{ row.note }}</span>
           </div>
+          </template>
           <div v-if="autoUrl(block)" class="info-row">
             <span class="info-label">访问地址：</span>
-            <span class="info-value kind-link"><a :href="safeHref(autoUrl(block))" target="_blank" rel="noopener noreferrer">{{ autoUrl(block) }} ↗</a></span>
-            <span class="info-note">自动识别</span>
+            <span class="info-value kind-link"><a :href="safeHref(autoUrl(block).url)" target="_blank" rel="noopener noreferrer">{{ autoUrl(block).url }} ↗</a></span>
+            <button class="mini-btn" @click="copy(autoUrl(block).url, bi + '-auto')">{{ copied === bi + '-auto' ? '✓ 已复制' : '复制' }}</button>
+            <span class="info-note">{{ autoUrl(block).note }}</span>
           </div>
         </div>
 
@@ -148,6 +151,7 @@
               </div>
             </div>
           </details>
+          <div v-if="status._disc" class="disc-sub">网址识别：{{ (status._disc.listen || []).length ? `读到 ${status._disc.listen.length} 条监听端口` : '还没读到端口对应关系' }}，{{ (status._disc.sites || []).length }} 个反代域名{{ status._disc.tsip ? '，有 Tailscale' : '' }}{{ (status._disc.v || 1) < 4 ? '。本机脚本是旧版，重跑一次安装命令才能识别网址' : '' }}</div>
           <div v-if="discovered.dockerSeen && !discovered.hasDocker" class="disc-sub">🐳 这台装了 Docker，但还读不到容器列表：在本机重新执行一次下面的安装命令即可（只需一次）。</div>
           <div v-if="discovered.ports.length" class="disc-ports">
             <span>本机监听端口：</span>
@@ -261,7 +265,7 @@ import { http, isAdminLoggedIn } from '../../utils/http'
 import { fetchServerDetail, getFlagRegionCode, isServerOnline } from '../../utils/api.js'
 import { getPublicAssetUrl, getApiBases } from '../../utils/config.js'
 import { copyTextToClipboard } from '../../utils/clipboard.js'
-import { buildDiscovered, siteUrlFor } from './consoleDiscover.js'
+import { buildDiscovered, serviceUrl } from './consoleDiscover.js'
 
 
 const DEFAULT_ICONS = ['🖥️', '📁', '📊', '🛡️', '🎯', '🚀', '🌐', '🔐', '🧰', '🐳', '📡', '🗄️', '🤖', '🎬', '🔧', '⚡', '📦', '🔗']
@@ -389,13 +393,14 @@ const linkedSvc = (block) => block?.svc ? profile.value.services.find(s => s.key
 // 关联服务的块里还没有填网址时，自动显示从反代配置认出来的网址
 const autoUrl = (block) => {
   const svc = linkedSvc(block)
-  if (!svc) return ''
-  if ((block.rows || []).some(r => r.kind === 'link' && r.value)) return ''
-  return siteUrlFor(svc, status.value?._disc)
+  if (!svc) return null
+  if ((block.rows || []).some(r => r.kind === 'link' && r.value)) return null
+  return serviceUrl(svc, status.value?._disc, ipText.value)
 }
 const fillUrl = (block, svc) => {
-  const url = siteUrlFor(svc, status.value?._disc)
-  if (!url) return
+  const r = serviceUrl(svc, status.value?._disc, ipText.value)
+  if (!r || !r.url.startsWith('https://')) return
+  const url = r.url
   const row = (block.rows || []).find(r => r.kind === 'link' && !r.value)
   if (row) { row.value = url; if (!row.label) row.label = '访问地址' }
   else if (!(block.rows || []).some(r => r.kind === 'link' && r.value)) block.rows.unshift({ label: '访问地址', value: url, kind: 'link', note: '' })

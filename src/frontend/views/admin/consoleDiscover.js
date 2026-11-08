@@ -131,21 +131,57 @@ export function buildDiscovered(disc, profile) {
   return { known, unknown, ports, at: Number(disc.at) || 0, hasDocker: Array.isArray(disc.containers) && disc.containers.length > 0, dockerSeen: Array.isArray(disc.procs) && disc.procs.some(p => /^(dockerd|containerd-shim.*)$/.test(p)) }
 }
 
-// 从自动发现结果里推这个服务的访问网址：服务端口（端口检查的目标，或 Docker 容器的宿主机映射端口）
-// 对上反代配置里的「域名 → 端口」就返回 https://域名，对不上返回空
-export function siteUrlFor(svc, disc) {
-  if (!svc || !disc) return ''
+// 从自动发现结果里推这个服务的访问网址，返回 { url, note }，推不出来返回 null
+// 端口来源：端口检查的目标；Docker 容器的宿主机映射端口；systemd 服务名 / 进程名对应的监听端口
+// 网址优先级：反代域名 → Tailscale 内网 IP → 公网 IP → 只监听本机时给 localhost（需隧道）
+const isLoop = (b) => /^(127\.|::1$|localhost$)/.test(String(b || ''))
+const isAny = (b) => ['0.0.0.0', '::', '*', ''].includes(String(b || ''))
+const NOISE_PORTS = new Set(['22', '53', '25', '111', '631'])
+
+export function serviceUrl(svc, disc, serverIp) {
+  if (!svc || !disc) return null
   const sites = Array.isArray(disc.sites) ? disc.sites : []
-  if (!sites.length) return ''
-  let ports = []
-  if (svc.check === 'port' && svc.target) ports = [String(svc.target)]
-  if (svc.check === 'docker' && Array.isArray(disc.containers)) {
-    const c = disc.containers.find(x => x[0] === svc.target)
-    if (c && Array.isArray(c[3])) ports = c[3].map(String)
+  const listen = Array.isArray(disc.listen) ? disc.listen : []
+  const target = String(svc.target || '').toLowerCase()
+  let cands = [] // [bind, port, score]
+  if (svc.check === 'port' && target) {
+    const hits = listen.filter(l => l[1] === target)
+    cands = hits.length ? hits.map(l => [l[0], l[1], 0]) : [['0.0.0.0', target, 0]]
+  } else if (svc.check === 'docker' && Array.isArray(disc.containers)) {
+    const c = disc.containers.find(x => String(x[0]).toLowerCase() === target)
+    if (c && Array.isArray(c[3])) cands = c[3].map(x => { const [b, p] = String(x).includes('|') ? String(x).split('|') : ['0.0.0.0', String(x)]; return [b, p, 0] })
+  } else if ((svc.check === 'systemd' || svc.check === 'process') && target) {
+    const t = target.replace(/\.service$/, '')
+    for (const [b, p, proc, unit] of listen) {
+      const pr = String(proc || '').toLowerCase(), un = String(unit || '').toLowerCase()
+      if (svc.check === 'systemd' && un === t) cands.push([b, p, pr && (t.includes(pr) || pr.includes(t)) ? 0 : 1])
+      else if (pr && (pr === t || (t.length >= 3 && (pr.includes(t) || t.includes(pr))))) cands.push([b, p, 0])
+    }
   }
-  for (const p of ports) {
-    const hit = sites.find(s => String(s[1]) === p)
-    if (hit) return `https://${hit[0]}`
+  cands = cands.filter(c => c[1] && !NOISE_PORTS.has(String(c[1])))
+  if (!cands.length) return null
+  // 去重同端口（IPv4/IPv6 各一条），按：进程名匹配 → 非本机监听 → 端口小
+  const byPort = new Map()
+  for (const c of cands) {
+    const old = byPort.get(c[1])
+    if (!old || (isLoop(old[0]) && !isLoop(c[0])) || c[2] < old[2]) byPort.set(c[1], c)
   }
-  return ''
+  const list = [...byPort.values()].sort((a, b) => a[2] - b[2] || (isLoop(a[0]) - isLoop(b[0])) || Number(a[1]) - Number(b[1]))
+  for (const c of list) {
+    const hit = sites.find(s => String(s[1]) === String(c[1]))
+    if (hit) return { url: `https://${hit[0]}`, note: '自动识别 · 反代域名' }
+  }
+  const best = list[0]
+  const [b, p] = best
+  if (isLoop(b)) return { url: `http://localhost:${p}`, note: '只监听本机，需要 SSH 隧道' }
+  if (/^100\./.test(b)) return { url: `http://${b}:${p}`, note: '自动识别 · Tailscale 内网' }
+  if (isAny(b) && disc.tsip) return { url: `http://${disc.tsip}:${p}`, note: '自动识别 · Tailscale 内网' }
+  const host = isAny(b) ? serverIp : b
+  if (!host) return null
+  return { url: `http://${host.includes(':') ? `[${host}]` : host}:${p}`, note: '自动识别 · 直连端口' }
+}
+
+export function siteUrlFor(svc, disc, serverIp) {
+  const r = serviceUrl(svc, disc, serverIp)
+  return r ? r.url : ''
 }
